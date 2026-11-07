@@ -396,21 +396,14 @@ impl AgentTool for BrowserTool {
                 )))
             }
             "browser_go_back" => {
-                run_with_reconnect(
-                    mgr,
-                    ctx,
-                    &provider,
-                    |c| async move { c.go_back().await },
-                )
-                .await?;
+                run_with_reconnect(mgr, ctx, &provider, |c| async move { c.go_back().await })
+                    .await?;
                 let state = page_state_after(mgr, ctx, &provider, PageState::Full).await;
                 Ok(ToolOutput::text(format!("navigated back{state}")))
             }
             "browser_go_forward" => {
-                run_with_reconnect(mgr, ctx, &provider, |c| async move {
-                    c.go_forward().await
-                })
-                .await?;
+                run_with_reconnect(mgr, ctx, &provider, |c| async move { c.go_forward().await })
+                    .await?;
                 let state = page_state_after(mgr, ctx, &provider, PageState::Full).await;
                 Ok(ToolOutput::text(format!("navigated forward{state}")))
             }
@@ -544,9 +537,12 @@ impl AgentTool for BrowserTool {
                 }
                 let p: P = serde_json::from_value(arguments)?;
                 let target = element_target(p.selector.as_deref(), p.index)?;
-                run_with_reconnect(mgr, ctx, &provider, |c| async move {
-                    c.click(target).await
-                })
+                run_with_reconnect(
+                    mgr,
+                    ctx,
+                    &provider,
+                    |c| async move { c.click(target).await },
+                )
                 .await?;
                 let state = page_state_after(mgr, ctx, &provider, PageState::Diff).await;
                 Ok(ToolOutput::text(format!("clicked{state}")))
@@ -559,9 +555,12 @@ impl AgentTool for BrowserTool {
                 }
                 let p: P = serde_json::from_value(arguments)?;
                 let target = element_target(p.selector.as_deref(), p.index)?;
-                run_with_reconnect(mgr, ctx, &provider, |c| async move {
-                    c.hover(target).await
-                })
+                run_with_reconnect(
+                    mgr,
+                    ctx,
+                    &provider,
+                    |c| async move { c.hover(target).await },
+                )
                 .await?;
                 let state = page_state_after(mgr, ctx, &provider, PageState::Diff).await;
                 Ok(ToolOutput::text(format!("hovered{state}")))
@@ -610,9 +609,12 @@ impl AgentTool for BrowserTool {
                 }
                 let p: P = serde_json::from_value(arguments)?;
                 let key = p.key.as_str();
-                run_with_reconnect(mgr, ctx, &provider, |c| async move {
-                    c.press_key(key).await
-                })
+                run_with_reconnect(
+                    mgr,
+                    ctx,
+                    &provider,
+                    |c| async move { c.press_key(key).await },
+                )
                 .await?;
                 let state = page_state_after(mgr, ctx, &provider, PageState::Diff).await;
                 Ok(ToolOutput::text(format!("pressed {}{state}", p.key)))
@@ -623,9 +625,12 @@ impl AgentTool for BrowserTool {
                     amount: Option<i64>,
                 }
                 let p: P = serde_json::from_value(arguments).unwrap_or(P { amount: None });
-                run_with_reconnect(mgr, ctx, &provider, |c| async move {
-                    c.scroll(p.amount).await
-                })
+                run_with_reconnect(
+                    mgr,
+                    ctx,
+                    &provider,
+                    |c| async move { c.scroll(p.amount).await },
+                )
                 .await?;
                 let state = page_state_after(mgr, ctx, &provider, PageState::Diff).await;
                 Ok(ToolOutput::text(format!("scrolled{state}")))
@@ -657,10 +662,14 @@ impl AgentTool for BrowserTool {
                 }
                 let p: P = serde_json::from_value(arguments)?;
                 let url = p.url.as_str();
-                let info = run_with_reconnect(mgr, ctx, &provider, |c| async move {
-                    c.new_tab(url).await
-                })
-                .await?;
+                let info =
+                    run_with_reconnect(
+                        mgr,
+                        ctx,
+                        &provider,
+                        |c| async move { c.new_tab(url).await },
+                    )
+                    .await?;
                 let state = page_state_after(mgr, ctx, &provider, PageState::Full).await;
                 Ok(ToolOutput::text(format!(
                     "{}{state}",
@@ -669,13 +678,8 @@ impl AgentTool for BrowserTool {
             }
             "browser_tab_list" => {
                 let tabs =
-                    run_with_reconnect(
-                        mgr,
-                        ctx,
-                        &provider,
-                        |c| async move { c.tabs().await },
-                    )
-                    .await?;
+                    run_with_reconnect(mgr, ctx, &provider, |c| async move { c.tabs().await })
+                        .await?;
                 Ok(ToolOutput::text(serde_json::to_string(&tabs)?))
             }
             "browser_switch_tab" => {

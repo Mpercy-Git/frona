@@ -91,10 +91,7 @@ impl EditTool {
                 "old_string matches {} locations in {}; provide more surrounding context to make it unique, or pass replace_all: true",
                 count, path_arg,
             ))),
-            EditOutcome::Applied {
-                rewritten,
-                count,
-            } => {
+            EditOutcome::Applied { rewritten, count } => {
                 atomic_write(&resolved, rewritten.as_bytes()).await?;
                 let snippet = context_snippet(&original, &rewritten, SNIPPET_CONTEXT_LINES);
                 let replacement_word = if count == 1 {

@@ -3152,6 +3152,7 @@ dependencies = [
  "chromiumoxide",
  "futures",
  "html2md",
+ "psl",
  "reqwest 0.13.4",
  "serde",
  "serde_json",

@@ -185,10 +185,12 @@ impl BrowserSessionManager {
         config: &BrowserConfig,
         timeout: Duration,
     ) -> Result<(), frona_browser::Error> {
-        let ws_url = Self::ws_url_for_profile(config, user_handle, "connection-test")
-            .map_err(|error| frona_browser::Error::ToolFailed {
-                tool: "browser_connect",
-                message: error.to_string(),
+        let ws_url =
+            Self::ws_url_for_profile(config, user_handle, "connection-test").map_err(|error| {
+                frona_browser::Error::ToolFailed {
+                    tool: "browser_connect",
+                    message: error.to_string(),
+                }
             })?;
         let conn = BrowserConnection::connect(ws_url.as_str(), timeout, timeout).await?;
         conn.disconnect().await

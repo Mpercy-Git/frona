@@ -189,6 +189,7 @@ fn build_app(state: AppState) -> Router {
         .merge(routes::activity::router())
         .merge(routes::admin::router())
         .merge(routes::auth::router())
+        .merge(routes::browser::router())
         .merge(routes::agents::router())
         .merge(routes::chats::router())
         .merge(routes::commands::router())

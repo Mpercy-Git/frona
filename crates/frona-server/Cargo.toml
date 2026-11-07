@@ -14,6 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 frona-api-types = { path = "../frona-api-types" }
+frona-cli-mcp = { path = "../frona-cli-mcp" }
 frona-model-catalog = { path = "../frona-model-catalog" }
 serde = { workspace = true }
 serde_json = { workspace = true }

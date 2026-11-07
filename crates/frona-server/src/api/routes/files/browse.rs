@@ -6,13 +6,12 @@ use tokio::fs;
 
 use crate::storage::path::{resolve_filesystem_path, resolve_workspace_path};
 use crate::storage::{
-    FileEntry, SearchTarget, VirtualPath, open_workspace_file,
-    validate_relative_path,
+    FileEntry, SearchTarget, VirtualPath, open_workspace_file, validate_relative_path,
 };
 
-use super::FileResponseQuery;
 use super::super::super::error::ApiError;
 use super::super::super::middleware::auth::AuthUser;
+use super::FileResponseQuery;
 use super::models::{FileAuth, SearchQuery};
 use crate::core::error::AppError;
 use crate::core::state::AppState;

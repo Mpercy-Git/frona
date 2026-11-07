@@ -98,7 +98,9 @@ impl AnalyzeImageTool {
         let image = match prepare_image(&bytes, &mime) {
             Ok(img) => img,
             Err(reason) => {
-                return Ok(ToolOutput::error(format!("{reason} at {path_arg} ({mime})")));
+                return Ok(ToolOutput::error(format!(
+                    "{reason} at {path_arg} ({mime})"
+                )));
             }
         };
 
