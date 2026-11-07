@@ -552,3 +552,18 @@ Verified: `cargo check --workspace --tests`; tests for frona-text/-browser/
 -cli-mcp and server `tool::` (340). `tests/api` and ignored real-browser tests not run.
 
 Next: Group J (deps/build/tests, Presage `f55f2b0`), then Group G as its own PR.
+
+### Status update — 2026-11-07 (Group J, code/deps part)
+
+Landed in `5934370`, `8175369`: `f55f2b0` (Presage b79321f1), `981905a` (argon2 0.6,
+keepass 0.17, minijinja 3, jsonschema 0.59, horned-owl 4, struct-patch 0.14,
+slack-morphism via lock; SurrealDB pinned `=3.2.4` as upstream; lock updated
+surgically with `cargo update -p`, fork git pins untouched), `295f8d0` (web deps;
+lexical held at 0.49 because `@assistant-ui/react-lexical` pins it), `fd1a253`,
+`5da5694`, `4bc1d4d`. Verified: full server lib tests (2064 pass), web tsc/eslint/
+vitest (980 pass).
+
+Not ported (needs Podman/Docker/CI): `2226111`, `ced1656`, `e3cd601`, `55793b3`,
+`ecd9272`, `055fe02`, `a09efd8`, `08213a2`, `ae88dfe`, `f104c28` and Group B/E
+dev-container work; `af0491e`, `30852f7`, `072d158` (target test files absent).
+Version bump to 2026.11.0 deferred until Group G.
