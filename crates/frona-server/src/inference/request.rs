@@ -161,16 +161,12 @@ pub fn active_chat(ctx: &InferenceContext) -> Result<&Chat, AppError> {
 }
 
 pub struct InferenceRequest {
-<<<<<<< ours
     /// Needed by the tool loop's vision-fallback path (resolving/streaming to
     /// an alternate vision-capable model group), which is orthogonal to the
     /// model group's own inference/streaming (now self-contained via
     /// `model_group.providers`).
     pub registry: ModelProviderRegistry,
-||||||| base
-=======
     pub input_token_estimate: Option<crate::inference::context::InputTokenEstimate>,
->>>>>>> upstream
     pub model_group: ModelGroup,
     pub system_prompt: String,
     pub history: Vec<RigMessage>,

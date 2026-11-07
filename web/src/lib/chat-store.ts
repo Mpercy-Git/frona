@@ -261,55 +261,6 @@ export class ChatStore {
       const { messages, has_more } = await api.get<{ messages: MessageResponse[]; has_more: boolean }>(
         `/api/chats/${chatId}/messages`,
       );
-<<<<<<< ours
-      // Merge instead of overwrite so messages that arrived first — via
-      // buffered SSE events on an unloaded chat, or the optimistic user
-      // message from onNew — survive the historical fetch. Historical
-      // messages predate anything in the store, so they go in front.
-      if (this.messages.length === 0) {
-        this.messages = messages;
-      } else {
-        const existing = new Set(this.messages.map((m) => m.id));
-        const historical = messages.filter((m) => !existing.has(m.id));
-        // An optimistic placeholder and its persisted row are the same
-        // message under two different ids, so the id filter above cannot
-        // pair them — it keeps both, and the user sees what they sent twice.
-        // This reload runs on every SSE reconnect, which is exactly when the
-        // server has already stored a message we are still showing
-        // optimistically, so pair them on what the user typed.
-        //
-        // Only a row arriving for the first time may claim a placeholder, and
-        // it claims exactly one. Content is not a key: testing every
-        // placeholder against every persisted message deletes what the user
-        // just sent as soon as they repeat themselves, and "ok" twice in one
-        // chat is two messages. A row already in the thread was reconciled
-        // when it first arrived and has no placeholder left to claim.
-        const claimed = new Set<MessageResponse>();
-        const pending = this.messages.filter(isOptimisticUserMessage);
-        for (const row of historical) {
-          if (row.role !== "user") continue;
-          const match = pending.find(
-            (p) => !claimed.has(p) && (p.content ?? "") === (row.content ?? ""),
-          );
-          if (match) claimed.add(match);
-        }
-        this.messages = [...historical, ...this.messages].filter(
-          (m) => !claimed.has(m),
-        );
-      }
-||||||| base
-      // Merge instead of overwrite so messages that arrived first — via
-      // buffered SSE events on an unloaded chat, or the optimistic user
-      // message from onNew — survive the historical fetch. Historical
-      // messages predate anything in the store, so they go in front.
-      if (this.messages.length === 0) {
-        this.messages = messages;
-      } else {
-        const existing = new Set(this.messages.map((m) => m.id));
-        const historical = messages.filter((m) => !existing.has(m.id));
-        this.messages = [...historical, ...this.messages];
-      }
-=======
       if (request !== this.historyRequest) return;
       const unchanged = activityRevision === this.activityRevision;
       const latest = messages.at(-1);
@@ -319,11 +270,29 @@ export class ChatStore {
       const existing = new Set(this.messages.map((message) => message.id));
       // Refresh persisted messages without overwriting events or optimistic
       // changes that arrived while the request was in flight.
+      const historical = messages.filter((message) => !existing.has(message.id));
+      // An optimistic placeholder and its persisted row are the same message
+      // under two ids, so the id filter above cannot pair them and the user
+      // would see what they sent twice. This reload runs on every SSE
+      // reconnect, exactly when the server may already have stored a message
+      // still shown optimistically, so pair them on what the user typed.
+      // Only a row arriving for the first time may claim a placeholder, and it
+      // claims exactly one: repeating yourself ("ok", "ok") is two messages.
+      const claimed = new Set<MessageResponse>();
+      const pending = this.messages.filter(isOptimisticUserMessage);
+      for (const row of historical) {
+        if (row.role !== "user") continue;
+        const match = pending.find(
+          (p) => !claimed.has(p) && (p.content ?? "") === (row.content ?? ""),
+        );
+        if (match) claimed.add(match);
+      }
       this.messages = [
-        ...messages.filter((message) => !existing.has(message.id)),
-        ...this.messages.map((message) => unchanged ? stored.get(message.id) ?? message : message),
+        ...historical,
+        ...this.messages
+          .filter((message) => !claimed.has(message))
+          .map((message) => unchanged ? stored.get(message.id) ?? message : message),
       ];
->>>>>>> upstream
       this.sortMessagesChronologically();
       if (unchanged && !pendingSend && latest?.role === "agent") {
         if (latest.status === "executing") {
@@ -338,31 +307,7 @@ export class ChatStore {
     } catch {
       // leave any optimistic/SSE-delivered messages alone
     }
-<<<<<<< ours
-    // A chat can be opened while a turn is in flight — a reload mid-run, or a
-    // task working through its turns. `isRunning` gates the composer's Stop
-    // button, so without seeding it from the loaded row the user lands on a
-    // spinning message with no way to stop it until the next SSE event happens
-    // to arrive, which can be minutes away while one long tool call runs. A
-    // row left `executing` by a crash self-corrects: Stop reports that there
-    // was nothing to cancel and the thread returns to idle.
-    if (this.messages[this.messages.length - 1]?.status === "executing") {
-      this.isRunning = true;
-    } else if (this.isRunning && !this.messages.some(isOptimisticUserMessage)) {
-      // The other direction matters just as much. This reload also runs when
-      // the SSE stream reconnects, and a turn can finish while the stream is
-      // down — its `inference_done` is never delivered. The history we just
-      // fetched says the run is over, so drop the stale streaming state
-      // instead of leaving a spinner and a Stop button for a turn that has
-      // already completed. An optimistic user message with no server echo yet
-      // means we kicked off a turn the history hasn't caught up with, so that
-      // case keeps the spinner.
-      this.clearStreaming();
-    }
-||||||| base
-=======
     if (request !== this.historyRequest) return;
->>>>>>> upstream
     this.hydrateExternalTools();
     this.loaded = true;
     this.notify();

@@ -1,9 +1,5 @@
-<<<<<<< ours
 pub mod agent_shares;
-||||||| base
-=======
 pub mod agent_context_snapshots;
->>>>>>> upstream
 pub mod agents;
 pub mod apps;
 pub mod basic_memory;

@@ -5,16 +5,8 @@ use chrono::Utc;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tokio_util::sync::CancellationToken;
 
-<<<<<<< ours
 use crate::agent::task::models::{Citation, SignalMode, Task, TaskKind, TaskStatus};
-use crate::chat::message::models::{MessageEvent, MessageRole};
-||||||| base
-use crate::agent::task::models::{SignalMode, Task, TaskKind, TaskStatus};
-use crate::chat::message::models::{MessageEvent, MessageRole};
-=======
-use crate::agent::task::models::{SignalMode, Task, TaskKind, TaskStatus};
 use crate::chat::message::models::{Message, MessageEvent, MessageRole, MessageStatus};
->>>>>>> upstream
 use crate::chat::models::CreateChatRequest;
 use crate::core::error::AppError;
 use crate::core::execution::{ExecutionKind, ExecutionSource, ExecutionSourceKind, NewExecution};
@@ -693,7 +685,6 @@ impl TaskExecutor {
                 }
             };
 
-<<<<<<< ours
             // Register the task's own cancel token as the chat's active session
             // so the chat-level stop (`active_sessions.cancel`, used by the chat
             // UI's stop button) reaches this running turn — not only
@@ -704,10 +695,6 @@ impl TaskExecutor {
                 .active_sessions
                 .register_token(&chat_id, cancel_token.clone())
                 .await;
-||||||| base
-            let session_token = self.harness.active_sessions.register(&chat_id).await;
-=======
->>>>>>> upstream
             let builder = Box::new(TaskConversationBuilder {
                 user_service: self.harness.user_service.clone(),
                 storage_service: self.harness.storage_service.clone(),
@@ -727,7 +714,6 @@ impl TaskExecutor {
                     None,
                 )
                 .await;
-<<<<<<< ours
             // Captured before `remove` so a genuine (not superseded) Stop
             // still reads as current — `remove` would otherwise delete this
             // same generation first and make the peek below always false.
@@ -740,11 +726,6 @@ impl TaskExecutor {
                 .active_sessions
                 .remove(&chat_id, session_id)
                 .await;
-||||||| base
-            drop(session_token);
-            self.harness.active_sessions.remove(&chat_id).await;
-=======
->>>>>>> upstream
 
             match result {
                 Ok(crate::agent::harness::AgentLoopOutcome {

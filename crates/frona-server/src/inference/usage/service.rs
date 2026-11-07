@@ -13,14 +13,9 @@ use crate::chat::broadcast::BroadcastService;
 use crate::core::config::ProviderBillingKind;
 use crate::core::repository::{Repository, new_id};
 use crate::db::repo::generic::SurrealRepo;
-<<<<<<< ours
 use crate::inference::metadata::{
     CatalogLookup, ModelCatalogStore, StorePricing, total_prompt_usage,
 };
-||||||| base
-=======
-use crate::inference::protocol::parameters::WireDialect;
->>>>>>> upstream
 use crate::inference::provider::ModelConfig;
 use crate::inference::usage::UsageContext;
 
@@ -271,14 +266,7 @@ fn build_row(
         provider: model_ref.provider_name().to_string(),
         model_id: model_ref.model_id.clone(),
         model_ref: model_ref.as_str(),
-        input_tokens: if WireDialect::for_model(&model_ref.provider) == WireDialect::Anthropic {
-            usage
-                .input_tokens
-                .saturating_add(usage.cached_input_tokens)
-                .saturating_add(usage.cache_creation_input_tokens)
-        } else {
-            usage.input_tokens
-        },
+        input_tokens: usage.input_tokens,
         cached_input_tokens: usage.cached_input_tokens,
         output_tokens: usage.output_tokens,
         total_tokens: usage.total_tokens,

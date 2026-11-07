@@ -561,49 +561,9 @@ impl MemoryService for BasicMemoryService {
         ]
     }
 
-<<<<<<< ours
-    async fn retrieve(&self, mcx: &mut MemoryContext<'_>) -> Result<(), AppError> {
-        // Static usage section first - read fresh so prompt edits apply live;
-        // constant across turns, so `[head][section]` stays a cacheable prefix
-        // and the dynamic memory tags follow.
-        let section = self.prompts.read("MEMORY.md").unwrap_or_default();
-        if !section.is_empty() {
-            mcx.system_prompt.push_str("\n\n");
-            mcx.system_prompt.push_str(&section);
-        }
-        // A private-memory agent has no `store_user_memory` tool; say so, or the
-        // guide above reads as an instruction to call something it cannot see.
-        // Constant per agent, so it stays inside the cacheable prefix.
-        if mcx.ctx.agent.private_memory {
-            let note = self.prompts.read("MEMORY_PRIVATE.md").unwrap_or_default();
-            if !note.is_empty() {
-                mcx.system_prompt.push_str("\n\n");
-                mcx.system_prompt.push_str(&note);
-            }
-        }
-
-        let user_id = mcx.ctx.user.id.clone();
-        let agent_id = mcx.ctx.agent.id.clone();
-        let space_id = mcx.ctx.chat.as_ref().and_then(|c| c.space_id.clone());
-||||||| base
-    async fn retrieve(&self, mcx: &mut MemoryContext<'_>) -> Result<(), AppError> {
-        // Static usage section first - read fresh so prompt edits apply live;
-        // constant across turns, so `[head][section]` stays a cacheable prefix
-        // and the dynamic memory tags follow.
-        let section = self.prompts.read("MEMORY.md").unwrap_or_default();
-        if !section.is_empty() {
-            mcx.system_prompt.push_str("\n\n");
-            mcx.system_prompt.push_str(&section);
-        }
-
-        let user_id = mcx.ctx.user.id.clone();
-        let agent_id = mcx.ctx.agent.id.clone();
-        let space_id = mcx.ctx.chat.as_ref().and_then(|c| c.space_id.clone());
-=======
     async fn instructions(&self, _: &crate::auth::User) -> Result<String, AppError> {
         Ok(self.prompts.try_read("MEMORY.md")?.unwrap_or_default())
     }
->>>>>>> upstream
 
     async fn collect(
         &self,
@@ -660,6 +620,18 @@ impl MemoryService for BasicMemoryService {
             if !values.is_empty() {
                 sections.push(Section::tagged(kind, tag, values));
             }
+        }
+        // A private-memory agent has no `store_user_memory` tool; say so, or the
+        // usage guide reads as an instruction to call something it cannot see.
+        if scope.agent.private_memory
+            && let Some(note) = self.prompts.try_read("MEMORY_PRIVATE.md")?
+            && !note.trim().is_empty()
+        {
+            sections.push(Section::prose(
+                Kind::PrivateMemoryNote,
+                "private_memory_note",
+                note.trim_end().to_string(),
+            ));
         }
         Ok(sections)
     }

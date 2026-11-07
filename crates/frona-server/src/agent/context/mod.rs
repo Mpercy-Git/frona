@@ -33,6 +33,8 @@ pub enum AgentContextKind {
     Playbooks,
     Temporal,
     TaskTime,
+    /// Fork-only: explains private-memory agents' memory scoping.
+    PrivateMemoryNote,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, SurrealValue)]

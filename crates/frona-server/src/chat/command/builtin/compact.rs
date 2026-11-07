@@ -21,20 +21,6 @@ impl Command for CompactCommand {
         _args: &str,
         ctx: &mut CommandContext<'_>,
     ) -> Result<CommandOutcome, AppError> {
-<<<<<<< ours
-        // Same weighing as a normal turn: what the builder replays around each
-        // message is mostly its tool calls, so `/compact` has to see them too or
-        // it reports "already at optimal size" on a chat that is over the window.
-        let tool_calls = ctx
-            .harness
-            .chat_service
-            .get_tool_calls(&ctx.chat.id)
-            .await
-            .unwrap_or_default();
-        let changed = ctx
-||||||| base
-        let changed = ctx
-=======
         if ctx.session.rig_history != ctx.session.model_history.history {
             return Err(AppError::Conflict(
                 "Session history no longer matches its compaction source".into(),
@@ -42,27 +28,14 @@ impl Command for CompactCommand {
         }
         let tools = crate::inference::tool_loop::to_rig_tool_definitions(
             ctx.session.tool_registry.definitions(),
-            ctx.session.tool_registry.mcp_bridge_mode(),
+            ctx.session.tool_registry.mcp_bridge_active(),
         );
         let outcome = ctx
->>>>>>> upstream
             .harness
             .chat_service
             .compactor()
             .compact_chat(
                 &ctx.chat.id,
-<<<<<<< ours
-                &ctx.chat.agent_id,
-                &ctx.session.system_prompt,
-                &tool_calls,
-                ctx.session.model_group.context_window,
-                DEFAULT_MAX_OUTPUT_TOKENS,
-||||||| base
-                &ctx.chat.agent_id,
-                &ctx.session.system_prompt,
-                ctx.session.model_group.context_window,
-                DEFAULT_MAX_OUTPUT_TOKENS,
-=======
                 crate::chat::compactor::CompactionContext {
                     agent_context: ctx.session.agent_context_scope(),
                     system_prompt: &ctx.session.system_prompt,
@@ -70,7 +43,6 @@ impl Command for CompactCommand {
                     model_history: &ctx.session.model_history,
                     tools: &tools,
                 },
->>>>>>> upstream
             )
             .await?;
         ctx.session.rig_history = outcome.model_history.history.clone();

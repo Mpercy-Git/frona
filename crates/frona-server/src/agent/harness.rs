@@ -569,20 +569,6 @@ impl Harness {
             .await?
             .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
 
-<<<<<<< ours
-||||||| base
-        // `message_id` is the AGENT response placeholder. The user message is
-        // separate. Signal/system-only chats may have no user-role message at
-        // all - then there's nothing to dispatch and we go straight to inference.
-        let request = self
-            .chat_service
-            .get_stored_messages(chat_id)
-            .await?
-            .into_iter()
-            .rev()
-            .find(|m| matches!(m.role, MessageRole::User));
-
-=======
         // `message_id` is the AGENT response placeholder. The user message is
         // separate. Signal/system-only chats may have no user-role message at
         // all - then there's nothing to dispatch and we go straight to inference.
@@ -597,7 +583,6 @@ impl Harness {
             .rev()
             .find(|m| matches!(m.role, MessageRole::User));
 
->>>>>>> upstream
         let mut response = self.chat_service.get_message(user_id, message_id).await?;
         if cancel_token.is_cancelled() {
             return Ok(AgentLoopOutcome {
@@ -636,21 +621,7 @@ impl Harness {
             });
         }
 
-<<<<<<< ours
-        // `message_id` is the AGENT response placeholder; the user message is
-        // separate. `build` already read the chat history, so take the user
-        // message from there rather than loading every message again just to
-        // inspect the last one. Signal/system-only chats may have no user-role
-        // message at all — then there's nothing to dispatch and we go straight
-        // to inference.
-        let request = session.last_user_message.clone();
-
-        let mut prompt_override: Option<String> = None;
-||||||| base
-        let mut prompt_override: Option<String> = None;
-=======
         let mut prompt_override: Option<CommandPromptOverride> = None;
->>>>>>> upstream
         if let Some(mut request) = request
             && matches!(request.role, MessageRole::User)
             && let Some(MessageCommand::Command { name, args }) = request.command.clone()
@@ -756,18 +727,11 @@ impl Harness {
             system_prompt,
             model_group,
             mut rig_history,
-<<<<<<< ours
             registry,
-            mut tool_registry,
-||||||| base
-
-            mut tool_registry,
-=======
             model_history,
             input_token_estimate,
 
             tool_registry,
->>>>>>> upstream
             tool_ctx,
             ..
         } = session;
@@ -819,12 +783,6 @@ impl Harness {
             rig_history[index] = rig_core::completion::Message::user(rendered_prompt);
         }
 
-<<<<<<< ours
-        let inference = crate::inference::inference(InferenceRequest {
-            registry,
-||||||| base
-        let inference = crate::inference::inference(InferenceRequest {
-=======
         // Validate after channel prompts and command overrides have made their
         // final changes, before inference can trim the active request.
         crate::chat::compactor::validate_initial_context(
@@ -838,8 +796,8 @@ impl Harness {
             input_token_estimate,
         )?;
         let mut inference = crate::inference::inference(InferenceRequest {
+            registry,
             input_token_estimate,
->>>>>>> upstream
             model_group,
             system_prompt,
             history: rig_history,
@@ -869,7 +827,6 @@ impl Harness {
         chat_id: &str,
         message_id: &str,
     ) -> Result<(), AppError> {
-<<<<<<< ours
         let (session_id, cancel_token) = self.active_sessions.register(chat_id).await;
         self.resume_registered(user_id, chat_id, message_id, session_id, cancel_token)
             .await
@@ -894,22 +851,6 @@ impl Harness {
         session_id: u64,
         cancel_token: CancellationToken,
     ) -> Result<(), AppError> {
-||||||| base
-        let cancel_token = self.active_sessions.register(chat_id).await;
-=======
-        let cancel_token = self.active_sessions.register(chat_id).await;
-        self.resume_with_cancel(user_id, chat_id, message_id, cancel_token)
-            .await
-    }
-
-    pub async fn resume_with_cancel(
-        &self,
-        user_id: &str,
-        chat_id: &str,
-        message_id: &str,
-        cancel_token: CancellationToken,
-    ) -> Result<(), AppError> {
->>>>>>> upstream
         let builder = Box::new(DefaultConversationBuilder {
             user_service: self.user_service.clone(),
             storage_service: self.storage_service.clone(),

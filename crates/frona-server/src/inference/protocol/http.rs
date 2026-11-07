@@ -124,23 +124,6 @@ fn rewrite(request: Request<Bytes>) -> http_client::Result<Request<Bytes>> {
     Ok(Request::from_parts(parts, Bytes::from(bytes)))
 }
 
-/// reqwest's top-level message ("error sending request for url") hides the
-/// actual cause (DNS, connect, TLS, reset, timeout) in the `source()` chain,
-/// which is lost once Rig stringifies the error. Log it at the transport layer.
-fn log_transport_error(error: &http_client::Error) {
-    if let http_client::Error::Instance(inner) = error {
-        let mut chain = Vec::new();
-        let mut source = inner.source();
-        while let Some(cause) = source {
-            chain.push(cause.to_string());
-            source = cause.source();
-        }
-        if !chain.is_empty() {
-            tracing::warn!(error = %inner, causes = %chain.join(" -> "), "Provider transport error");
-        }
-    }
-}
-
 impl HttpClientExt for WireClient {
     fn send<T, U>(
         &self,
@@ -152,24 +135,12 @@ impl HttpClientExt for WireClient {
     {
         let request = rewrite(request.map(Into::into));
         let inner = self.inner.clone();
-<<<<<<< ours
-        async move {
-            let result = inner.send(request?).await;
-            if let Err(error) = &result {
-                log_transport_error(error);
-            }
-            result
-        }
-||||||| base
-        async move { inner.send(request?).await }
-=======
         async move {
             inner
                 .send(request?)
                 .await
                 .inspect_err(|error| log_transport_error("send", error))
         }
->>>>>>> upstream
     }
 
     fn send_multipart<U>(
@@ -190,17 +161,6 @@ impl HttpClientExt for WireClient {
         T: Into<Bytes> + Send,
     {
         let request = rewrite(request.map(Into::into));
-<<<<<<< ours
-        async move {
-            let result = self.inner.send_streaming(request?).await;
-            if let Err(error) = &result {
-                log_transport_error(error);
-            }
-            result
-        }
-||||||| base
-        async move { self.inner.send_streaming(request?).await }
-=======
         async move {
             self.inner
                 .send_streaming(request?)
@@ -448,6 +408,5 @@ mod tests {
             assert!(captured.result.is_ok());
             assert!(captured.logs.is_empty());
         }
->>>>>>> upstream
     }
 }

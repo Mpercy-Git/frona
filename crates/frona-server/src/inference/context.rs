@@ -56,7 +56,7 @@ impl InputTokenEstimate {
 
 /// Last-resort context window when the model isn't in the catalog AND no
 /// config override is set. 128K is the floor most modern chat models meet.
-/// Used by `ProviderRegistry::resolve_model_group` when baking the window
+/// Used when compiling named model groups without catalog limits
 /// into `ModelGroup.context_window`.
 pub const DEFAULT_CONTEXT_WINDOW: usize = 128_000;
 
@@ -155,25 +155,6 @@ pub fn truncate_history(
         };
     }
 
-<<<<<<< ours
-    let original_len = history.len();
-
-    // The rolling summary is the only record of everything compacted away
-    // (typically the conversation's opening request), so it is pinned: dropping
-    // it first, as plain oldest-first trimming would, is exactly how the agent
-    // "forgets" what it was originally asked.
-    let pinned = history.first().filter(|m| is_summary_message(m)).cloned();
-    let pinned_cost = pinned.as_ref().map(estimate_message_tokens).unwrap_or(0);
-    let tail_budget = budget.saturating_sub(pinned_cost);
-    let tail_start = usize::from(pinned.is_some());
-
-    let mut result: Vec<RigMessage> = Vec::new();
-    let mut used = 0usize;
-||||||| base
-    let original_len = history.len();
-    let mut result: Vec<RigMessage> = Vec::new();
-    let mut used = 0usize;
-=======
     let summary_end = usize::from(matches!(history.first(), Some(RigMessage::User { content })
         if matches!(content.as_slice(), [UserContent::Text(text)]
             if text.text.starts_with("<conversation_summary>\n")
@@ -188,23 +169,12 @@ pub fn truncate_history(
     if summary_end == history.len() {
         return Ok(history);
     }
->>>>>>> upstream
 
-<<<<<<< ours
-    for msg in history.into_iter().skip(tail_start).rev() {
-        let cost = estimate_message_tokens(&msg);
-        if used + cost > tail_budget {
-||||||| base
-    for msg in history.into_iter().rev() {
-        let cost = estimate_message_tokens(&msg);
-        if used + cost > budget {
-=======
     let mut used = summary_tokens;
     let mut start = None;
     for index in (summary_end..history.len()).rev() {
         used += estimate_message_tokens(&history[index]);
         if used > budget {
->>>>>>> upstream
             break;
         }
         if matches!(&history[index], RigMessage::User { content }
@@ -227,51 +197,6 @@ pub fn truncate_history(
     Ok(history)
 }
 
-<<<<<<< ours
-    result.reverse();
-    // Cutting mid-conversation can leave the tail opening on a model turn or on
-    // a tool result whose call was dropped. Gemini (and others) reject a
-    // conversation that doesn't start on a user turn, or a function response
-    // with no call before it, so trim to the first plain user message.
-    let leading_invalid = result
-        .iter()
-        .take_while(|m| !is_plain_user_message(m))
-        .count();
-    if leading_invalid < result.len() {
-        result.drain(..leading_invalid);
-    }
-    if let Some(summary) = pinned {
-        result.insert(0, summary);
-    }
-    // We only get here when the history is over budget and messages are being
-    // dropped oldest-first - a silent context loss the caller can't see. Surface
-    // it: for the compaction summarizer (`text_inference`) this means the backlog
-    // exceeded the summarizer's own window and the oldest messages won't reach the
-    // summary either. No-op truncations returned above, so this never fires spuriously.
-    tracing::warn!(
-        estimated_tokens = total,
-        budget,
-        dropped_messages = original_len - result.len(),
-        kept_messages = result.len(),
-        "history over budget: dropped oldest messages to fit (silent context loss)"
-    );
-    result
-||||||| base
-    result.reverse();
-    // We only get here when the history is over budget and messages are being
-    // dropped oldest-first - a silent context loss the caller can't see. Surface
-    // it: for the compaction summarizer (`text_inference`) this means the backlog
-    // exceeded the summarizer's own window and the oldest messages won't reach the
-    // summary either. No-op truncations returned above, so this never fires spuriously.
-    tracing::warn!(
-        estimated_tokens = total,
-        budget,
-        dropped_messages = original_len - result.len(),
-        kept_messages = result.len(),
-        "history over budget: dropped oldest messages to fit (silent context loss)"
-    );
-    result
-=======
 /// Keep every retained call paired with exactly one result before the next
 /// assistant response. Results may span several User messages, or share one
 /// message with text, so User roles alone are not sufficient to check pairing.
@@ -320,28 +245,6 @@ fn validate_tool_groups(history: &[RigMessage]) -> Result<(), String> {
         Ok(())
     } else {
         Err("History ends with an incomplete tool-result group".into())
-    }
->>>>>>> upstream
-}
-
-const SUMMARY_OPEN_TAG: &str = "<conversation_summary>";
-
-fn is_summary_message(msg: &RigMessage) -> bool {
-    match msg {
-        RigMessage::User { content } => content.iter().any(|c| {
-            matches!(c, rig_core::completion::message::UserContent::Text(t)
-                if t.text.starts_with(SUMMARY_OPEN_TAG))
-        }),
-        _ => false,
-    }
-}
-
-fn is_plain_user_message(msg: &RigMessage) -> bool {
-    match msg {
-        RigMessage::User { content } => !content
-            .iter()
-            .any(|c| matches!(c, rig_core::completion::message::UserContent::ToolResult(_))),
-        _ => false,
     }
 }
 
@@ -435,36 +338,5 @@ mod tests {
         let msgs = vec![RigMessage::user(&long), RigMessage::user("keep this")];
         let result = truncate_history(msgs, "system", 200_000, 8192, 90).unwrap();
         assert!(result.len() <= 2);
-    }
-
-    #[test]
-    fn test_truncate_history_pins_summary() {
-        let summary =
-            RigMessage::user("<conversation_summary>\nopening request\n</conversation_summary>");
-        let big = "x".repeat(4_000);
-        let msgs = vec![
-            summary.clone(),
-            RigMessage::user(&big),
-            RigMessage::user(&big),
-            RigMessage::user("latest"),
-        ];
-        // Budget fits the summary plus roughly one big message.
-        let result = truncate_history(msgs, "", 1_300, 0, 100);
-        assert_eq!(result.first(), Some(&summary));
-        assert_eq!(result.last(), Some(&RigMessage::user("latest")));
-        assert!(result.len() < 4);
-    }
-
-    #[test]
-    fn test_truncate_history_starts_on_user_turn() {
-        let big = "x".repeat(4_000);
-        let msgs = vec![
-            RigMessage::user(&big),
-            RigMessage::assistant(&big),
-            RigMessage::user("next question"),
-            RigMessage::assistant("answer"),
-        ];
-        let result = truncate_history(msgs, "", 1_100, 0, 100);
-        assert!(matches!(result.first(), Some(RigMessage::User { .. })));
     }
 }

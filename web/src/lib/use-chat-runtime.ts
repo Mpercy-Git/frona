@@ -25,7 +25,6 @@ export function getBackendAttachment(id: string): Attachment | undefined {
   return backendAttachmentRegistry.get(id);
 }
 
-<<<<<<< ours
 export function getBackendAttachments(attachments: readonly (PendingAttachment | CompleteAttachment)[]): Attachment[] {
   return attachments.map((attachment) => {
     if (attachment.status.type === "running") {
@@ -49,34 +48,6 @@ function completeAttachment(
   // Only treat it as a renderable image if we actually have a URL — otherwise
   // an empty src produces a broken <img>. Fall back to the file placeholder.
   const imageUrl = attachment.contentType?.startsWith("image/") ? url?.trim() : undefined;
-||||||| base
-function convertBackendAttachment(att: Attachment): CompleteAttachment {
-  const url = att.url ?? "";
-  const isImage = att.content_type.startsWith("image/");
-  registerBackendAttachment(att.path, att);
-=======
-export function getBackendAttachments(attachments: readonly (PendingAttachment | CompleteAttachment)[]): Attachment[] {
-  return attachments.map((attachment) => {
-    if (attachment.status.type === "running") {
-      throw new Error(`Wait for "${attachment.name}" to finish uploading.`);
-    }
-    if (attachment.status.type === "incomplete") {
-      throw new Error(attachment.status.message ?? `Remove and reattach "${attachment.name}" before sending.`);
-    }
-    const backend = getBackendAttachment(attachment.id);
-    if (!backend) {
-      throw new Error(`"${attachment.name}" is no longer available. Remove and reattach it before sending.`);
-    }
-    return backend;
-  });
-}
-
-function completeAttachment(
-  attachment: Pick<CompleteAttachment, "id" | "name" | "contentType" | "file">,
-  url?: string,
-): CompleteAttachment {
-  const imageUrl = attachment.contentType?.startsWith("image/") ? url?.trim() : undefined;
->>>>>>> upstream
   return {
     ...attachment,
     type: imageUrl ? "image" : "file",
@@ -87,25 +58,11 @@ function completeAttachment(
   };
 }
 
-<<<<<<< ours
-function convertBackendAttachment(att: Attachment, file?: File): CompleteAttachment {
-  registerBackendAttachment(att.path, att);
-  return completeAttachment({ id: att.path, name: att.filename, contentType: att.content_type, ...(file ? { file } : {}) }, att.url);
-}
-||||||| base
-export const fronaAttachmentAdapter: AttachmentAdapter = {
-  accept: "*/*",
-=======
 function convertBackendAttachment(att: Attachment, file?: File): CompleteAttachment {
   registerBackendAttachment(att.path, att);
   return completeAttachment({ id: att.path, name: att.filename, contentType: att.content_type, ...(file ? { file } : {}) }, att.url);
 }
 
-export const fronaAttachmentAdapter: AttachmentAdapter = {
-  accept: "*",
->>>>>>> upstream
-
-<<<<<<< ours
 export function createFronaAttachmentAdapter(
   onError?: (message: string) => void,
 ): AttachmentAdapter {
@@ -120,17 +77,6 @@ export function createFronaAttachmentAdapter(
   async *add({ file }: { file: File }): AsyncGenerator<PendingAttachment> {
     const attachment: PendingAttachment = {
       id: crypto.randomUUID(),
-||||||| base
-  async add({ file }: { file: File }): Promise<PendingAttachment> {
-    const uploaded = await uploadFile(file);
-    backendAttachmentRegistry.set(uploaded.path, uploaded);
-    return {
-      id: uploaded.path,
-=======
-  async *add({ file }: { file: File }): AsyncGenerator<PendingAttachment> {
-    const attachment: PendingAttachment = {
-      id: crypto.randomUUID(),
->>>>>>> upstream
       type: "file",
       name: file.name,
       contentType: file.type,
@@ -138,7 +84,6 @@ export function createFronaAttachmentAdapter(
       content: [],
       file,
     };
-<<<<<<< ours
     yield attachment;
     try {
       const uploaded = await uploadFile(file);
@@ -163,48 +108,12 @@ export function createFronaAttachmentAdapter(
         },
       };
     }
-||||||| base
-=======
-    yield attachment;
-    try {
-      const uploaded = await uploadFile(file);
-      backendAttachmentRegistry.set(attachment.id, uploaded);
-      yield {
-        ...attachment,
-        name: uploaded.filename,
-        contentType: uploaded.content_type,
-        status: { type: "requires-action", reason: "composer-send" },
-      };
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : "Upload failed";
-      yield {
-        ...attachment,
-        status: {
-          type: "incomplete", reason: "error",
-          message: `Could not upload "${file.name}": ${detail}. Remove and reattach it to retry.`,
-        },
-      };
-    }
->>>>>>> upstream
   },
 
   async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
-<<<<<<< ours
     // Prefer the presigned URL from the upload response over a blob URL: it
     // needs no revoking (no leak) and matches what history reload will show.
     return completeAttachment(attachment, getBackendAttachment(attachment.id)?.url);
-||||||| base
-    const isImage = attachment.contentType?.startsWith("image/");
-    return {
-      ...attachment,
-      status: { type: "complete" },
-      content: isImage && attachment.file
-        ? [{ type: "image", image: URL.createObjectURL(attachment.file) }]
-        : [{ type: "text", text: `[file: ${attachment.name}]` }],
-    };
-=======
-    return completeAttachment(attachment, getBackendAttachment(attachment.id)?.url);
->>>>>>> upstream
   },
 
   async remove(attachment) {
@@ -469,14 +378,9 @@ export interface ChatRuntimeOptions {
 }
 
 export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOptions) {
-<<<<<<< ours
   const toast = useToast();
-  const localImageFiles = useRef(new Map<string, File>()).current;
-||||||| base
-=======
   // Only URL-less image previews need the local File; keep them within this runtime's lifetime.
   const localImageFiles = useRef(new Map<string, File>()).current;
->>>>>>> upstream
   const currentChatIdRef = useRef<string | null>(chatId ?? null);
   currentChatIdRef.current = chatId ?? currentChatIdRef.current;
   const onChatCreatedRef = useRef(onChatCreated);
@@ -683,13 +587,7 @@ export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOp
     adapters: {
       attachments: attachmentAdapter,
     },
-<<<<<<< ours
   }), [filteredMessages, storeSnapshot.isRunning, onNew, onCancel, store, attachmentAdapter, localImageFiles]);
-||||||| base
-  }), [filteredMessages, storeSnapshot.isRunning, onNew, onCancel, store]);
-=======
-  }), [filteredMessages, storeSnapshot.isRunning, onNew, onCancel, store, localImageFiles]);
->>>>>>> upstream
 
   const runtime = useExternalStoreRuntime(adapter);
 

@@ -17,19 +17,6 @@ use super::vault::VaultScope;
 use crate::agent::context::{AgentContextKind, AgentContextScope, AgentContextSection};
 
 impl PkmService {
-<<<<<<< ours
-    /// `agent_id` is the reading agent: it sees the user's shared rows plus its own
-    /// private ones (a private-memory agent's `memory_remember` writes the latter).
-    async fn short_memory_block(
-        &self,
-        user_id: &str,
-        agent_id: &str,
-    ) -> Result<Option<String>, AppError> {
-        let rows = self.repo.list_short_memory(user_id, Some(agent_id)).await?;
-||||||| base
-    async fn short_memory_block(&self, user_id: &str) -> Result<Option<String>, AppError> {
-        let rows = self.repo.list_short_memory(user_id).await?;
-=======
     pub(super) async fn instructions_for(
         &self,
         user: &crate::auth::User,
@@ -48,12 +35,14 @@ impl PkmService {
             .unwrap_or_default())
     }
 
+    /// `agent_id` is the reading agent: it sees the user's shared rows plus its own
+    /// private ones (a private-memory agent's `memory_remember` writes the latter).
     async fn short_memory_block(
         &self,
         user_id: &str,
+        agent_id: &str,
     ) -> Result<Option<AgentContextSection>, AppError> {
-        let rows = self.repo.list_short_memory(user_id).await?;
->>>>>>> upstream
+        let rows = self.repo.list_short_memory(user_id, Some(agent_id)).await?;
         if rows.is_empty() {
             return Ok(None);
         }
@@ -148,67 +137,6 @@ impl PkmService {
         Ok(Some(section))
     }
 
-<<<<<<< ours
-    /// The whole per-turn contribution. `MemoryService::retrieve` delegates here.
-    pub(super) async fn retrieve_into(&self, mcx: &mut MemoryContext<'_>) -> Result<(), AppError> {
-        // Usage guide + navigation, read fresh so prompt edits apply live. The
-        // `## Navigation` section needs the per-user vault root + directory, so the
-        // whole file is rendered with them injected. Constant across turns → stays in
-        // the cache prefix ahead of the dynamic <short_memory> tag.
-        let vault = VaultScope::resolve(
-            &self.user_service,
-            &self.storage,
-            &mcx.ctx.user.id,
-            &mcx.ctx.user.handle,
-        )
-        .await?;
-        if let Some(section) = self.prompts.read_with_vars(
-            "pkm/agent_section.md",
-            &[
-                ("memory_root", &vault.root().to_string_lossy()),
-                ("directory", vault.directory()),
-            ],
-        ) && !section.is_empty()
-        {
-            mcx.system_prompt.push_str("\n\n");
-            mcx.system_prompt.push_str(section.trim_end());
-        }
-        // A private-memory agent's `memory_remember` writes only for itself and its
-        // chats never reach consolidation, so the guide's account of where its notes
-        // end up would otherwise be wrong. Constant per agent → still cache-prefixed.
-        if mcx.ctx.agent.private_memory
-            && let Some(note) = self.prompts.read("pkm/private_section.md")
-            && !note.is_empty()
-        {
-            mcx.system_prompt.push_str("\n\n");
-            mcx.system_prompt.push_str(note.trim_end());
-        }
-||||||| base
-    /// The whole per-turn contribution. `MemoryService::retrieve` delegates here.
-    pub(super) async fn retrieve_into(&self, mcx: &mut MemoryContext<'_>) -> Result<(), AppError> {
-        // Usage guide + navigation, read fresh so prompt edits apply live. The
-        // `## Navigation` section needs the per-user vault root + directory, so the
-        // whole file is rendered with them injected. Constant across turns → stays in
-        // the cache prefix ahead of the dynamic <short_memory> tag.
-        let vault = VaultScope::resolve(
-            &self.user_service,
-            &self.storage,
-            &mcx.ctx.user.id,
-            &mcx.ctx.user.handle,
-        )
-        .await?;
-        if let Some(section) = self.prompts.read_with_vars(
-            "pkm/agent_section.md",
-            &[
-                ("memory_root", &vault.root().to_string_lossy()),
-                ("directory", vault.directory()),
-            ],
-        ) && !section.is_empty()
-        {
-            mcx.system_prompt.push_str("\n\n");
-            mcx.system_prompt.push_str(section.trim_end());
-        }
-=======
     /// Collect the whole contribution at a new turn or compaction boundary.
     pub(super) async fn collect_context(
         &self,
@@ -218,7 +146,6 @@ impl PkmService {
         let mut sections = Vec::new();
         let vault =
             VaultScope::resolve(&self.user_service, &self.storage, &user.id, &user.handle).await?;
->>>>>>> upstream
 
         // <user_profile>: always injected. Header comes from the resolved session User;
         // enrichment is the self-page's learned
@@ -249,49 +176,29 @@ impl PkmService {
                 profile.push_str(&format!("{k}: {v}\n"));
             }
         }
-<<<<<<< ours
-        mcx.system_prompt.push_str("\n\n<user_profile>\n");
-        mcx.system_prompt.push_str(profile.trim_end());
-        mcx.system_prompt.push_str("\n</user_profile>");
-
-        // Auto-injected blocks: short memory (facts), then the playbook index
-        // (existence advertisement). Concept pages are still pull-only - reached on
-        // demand through the tools. The playbook index carries only name +
-        // description + path, so the agent knows which procedures exist and can
-        // `read(<path>)` the body without a blind `memory_search` first.
-        if let Some(block) = self
-            .short_memory_block(&mcx.ctx.user.id, &mcx.ctx.agent.id)
-            .await?
-        {
-            mcx.system_prompt.push_str("\n\n<short_memory>\n");
-            mcx.system_prompt.push_str(&block);
-            mcx.system_prompt.push_str("</short_memory>");
-||||||| base
-        mcx.system_prompt.push_str("\n\n<user_profile>\n");
-        mcx.system_prompt.push_str(profile.trim_end());
-        mcx.system_prompt.push_str("\n</user_profile>");
-
-        // Auto-injected blocks: short memory (facts), then the playbook index
-        // (existence advertisement). Concept pages are still pull-only - reached on
-        // demand through the tools. The playbook index carries only name +
-        // description + path, so the agent knows which procedures exist and can
-        // `read(<path>)` the body without a blind `memory_search` first.
-        if let Some(block) = self.short_memory_block(&mcx.ctx.user.id).await? {
-            mcx.system_prompt.push_str("\n\n<short_memory>\n");
-            mcx.system_prompt.push_str(&block);
-            mcx.system_prompt.push_str("</short_memory>");
-=======
         sections.push(AgentContextSection::prose(
             AgentContextKind::UserProfile,
             "user_profile",
             profile.trim_end().into(),
         ));
-        if let Some(section) = self.short_memory_block(&user.id).await? {
+        if let Some(section) = self.short_memory_block(&user.id, &scope.agent.id).await? {
             sections.push(section);
->>>>>>> upstream
         }
         if let Some(section) = self.playbook_index_block(&user.id, &vault).await? {
             sections.push(section);
+        }
+        // A private-memory agent's `memory_remember` writes only for itself and its
+        // chats never reach consolidation, so the guide's account of where its notes
+        // end up would otherwise be wrong.
+        if scope.agent.private_memory
+            && let Some(note) = self.prompts.try_read("pkm/private_section.md")?
+            && !note.trim().is_empty()
+        {
+            sections.push(AgentContextSection::prose(
+                AgentContextKind::PrivateMemoryNote,
+                "private_memory_note",
+                note.trim_end().to_string(),
+            ));
         }
         Ok(sections)
     }

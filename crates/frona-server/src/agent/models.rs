@@ -34,16 +34,11 @@ pub struct Agent {
     /// TTS voice ID for live calls this agent answers or is transferred
     /// into. `None` falls back to the server-level `voice.twilio_voice_id`.
     #[serde(default)]
-<<<<<<< ours
     pub voice_id: Option<String>,
     /// `surreal` as well as `serde`: the database read path honours only the
     /// former, and a row written before this field existed has no key at all.
     #[serde(default)]
     #[surreal(default)]
-||||||| base
-=======
-    #[surreal(default)]
->>>>>>> upstream
     pub identity: BTreeMap<String, String>,
     /// Keep this agent's memory to itself. When set, the agent never writes to
     /// any user-scoped memory the user's other agents can read - shared user

@@ -48,6 +48,7 @@ impl AgentContextSource for CatalogContextSource {
                 .collect(),
         )];
         let mut entries = BTreeMap::new();
+        let mut denied = Vec::new();
         for target in self.agents.list(&scope.user.id).await? {
             if target.id == agent.id || !target.enabled {
                 continue;
@@ -68,11 +69,20 @@ impl AgentContextSource for CatalogContextSource {
                     target.id,
                     format!("- {}: {}\n", target.name, target.description),
                 );
+            } else {
+                denied.push(target.name.clone());
             }
         }
+        // An agent shown nothing concludes it has no colleagues, which is wrong
+        // whenever delegation policy is what hid them. Name them (fork behavior).
+        if let Some(note) = crate::agent::prompt::denied_delegation_note(&denied) {
+            entries.insert("~denied".into(), format!("{note}\n"));
+        }
+        let has_delegable = entries.keys().any(|key| key != "~denied");
         let mut agents =
             AgentContextSection::tagged(AgentContextKind::Agents, "available_agents", entries);
-        if let Some(header) = self.prompts.try_read("AVAILABLE_AGENTS.md")? {
+        // The header introduces items, so it is dropped when there are none.
+        if has_delegable && let Some(header) = self.prompts.try_read("AVAILABLE_AGENTS.md")? {
             agents.prefix.push_str(header.trim());
             agents.prefix.push('\n');
         }
@@ -95,11 +105,23 @@ impl AgentContextSource for CatalogContextSource {
                 {
                     entries.insert(
                         server.id,
-                        format!(
-                            "- {}: {}\n",
-                            server.handle,
-                            server.description.unwrap_or(server.display_name)
-                        ),
+                        {
+                            // The tool cache is populated when the server starts, so
+                            // naming the tools is free and saves a discovery call.
+                            let tools: Vec<String> =
+                                server.tool_cache.iter().map(|t| t.name.clone()).collect();
+                            let description =
+                                server.description.unwrap_or(server.display_name);
+                            format!(
+                                "- {}: {}\n",
+                                server.handle,
+                                crate::agent::prompt::mcp_server_line(
+                                    server.handle.as_ref(),
+                                    &description,
+                                    &tools
+                                )
+                            )
+                        },
                     );
                 }
             }

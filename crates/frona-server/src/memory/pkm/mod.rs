@@ -67,16 +67,8 @@ use crate::agent::prompt::PromptLoader;
 use crate::core::config::MemoryConfig;
 use crate::core::error::AppError;
 use crate::db::repo::tool_calls::SurrealToolCallRepo;
-<<<<<<< ours
 use crate::inference::ModelProviderRegistry;
-use crate::memory::service::{MemoryContext, MemoryService};
-||||||| base
-use crate::inference::provider::service::ModelProviderService;
-use crate::memory::service::{MemoryContext, MemoryService};
-=======
-use crate::inference::provider::service::ModelProviderService;
 use crate::memory::service::MemoryService;
->>>>>>> upstream
 use crate::scheduler::Scheduler;
 use crate::storage::StorageService;
 use crate::tool::AgentTool;

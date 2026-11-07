@@ -698,7 +698,6 @@ impl AppState {
             config_arc.clone(),
         );
 
-<<<<<<< ours
         let push_subscription_repo: Arc<dyn PushSubscriptionRepository> =
             Arc::new(SurrealPushSubscriptionRepo::new(db.clone()));
         // A malformed VAPID private key must not be reported as "not
@@ -732,10 +731,6 @@ impl AppState {
             user_service.clone(),
         );
 
-        let mut chat_service = ChatService::new(
-||||||| base
-        let chat_service = ChatService::new(
-=======
         let agent_context_manager = crate::agent::context::AgentContextManager::new(
             vec![
                 Arc::new(crate::agent::context::CatalogContextSource {
@@ -761,8 +756,7 @@ impl AppState {
             memory_service.clone(),
             skill_service.clone(),
         );
-        let chat_service = ChatService::new(
->>>>>>> upstream
+        let mut chat_service = ChatService::new(
             chat_repo,
             message_repo,
             tool_call_repo,
@@ -796,17 +790,9 @@ impl AppState {
             storage.clone(),
             agent_service.clone(),
             memory_service.clone(),
-<<<<<<< ours
-            skill_service.clone(),
             task_service.clone(),
             notification_service.clone(),
             vault_service.clone(),
-||||||| base
-            skill_service.clone(),
-            TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
-=======
-            TaskService::new(SurrealRepo::new(db.clone()), broadcast_service.clone()),
->>>>>>> upstream
             mcp_service.clone(),
             tool_manager.clone(),
             policy_service.clone(),

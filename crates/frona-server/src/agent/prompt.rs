@@ -6,7 +6,6 @@ use crate::agent::workspace::AgentPromptLoader;
 use crate::core::Handle;
 use crate::core::template::render_template;
 use crate::storage::StorageService;
-use crate::tool::registry::AgentSummaries;
 
 #[derive(Clone)]
 pub struct PromptLoader {
@@ -152,7 +151,7 @@ impl PromptLoader {
 /// them. Naming them costs a line and turns an invisible denial into something
 /// the user can act on. Deterministic in the order the agents were listed, so
 /// the cacheable prefix stays byte-stable between turns.
-fn denied_delegation_note(denied: &[String]) -> Option<String> {
+pub(crate) fn denied_delegation_note(denied: &[String]) -> Option<String> {
     if denied.is_empty() {
         return None;
     }
@@ -201,7 +200,6 @@ pub fn append_tagged_section(
     result.push_str(&format!("</{tag}>"));
 }
 
-<<<<<<< ours
 /// Cap on tool names spelled out for one server in `<mcpservers>`. A server with
 /// more than this is summarised and the tail left to `--help`: the point is to
 /// show what the server is *for*, which the first couple of dozen names do.
@@ -243,46 +241,6 @@ pub fn mcp_server_line(handle: &str, description: &str, tools: &[String]) -> Str
     line
 }
 
-/// Assemble the agent's full system prompt (identity, agent prompt files,
-/// skills, MCP, available agents, temporal context). The **memory** service
-/// contributes only `memory_section` (its static `MEMORY.md`); the dynamic
-/// memory blocks are appended later by `MemoryService::retrieve`. Ordered
-/// static → almost-static → dynamic to maximise the cacheable prefix.
-#[allow(clippy::too_many_arguments)]
-pub fn build_augmented_system_prompt(
-    base_prompt: &str,
-    identity: &BTreeMap<String, String>,
-    prompts: &PromptLoader,
-    storage: &StorageService,
-    user_handle: &Handle,
-    agent_handle: &Handle,
-    skills: &[Skill],
-    agent_summaries: &AgentSummaries,
-    mcp_servers: &[(String, String)],
-    user_timezone: &str,
-) -> String {
-    let mut result = base_prompt.to_string();
-||||||| base
-/// Assemble the agent's full system prompt (identity, agent prompt files,
-/// skills, MCP, available agents, temporal context). The **memory** service
-/// contributes only `memory_section` (its static `MEMORY.md`); the dynamic
-/// memory blocks are appended later by `MemoryService::retrieve`. Ordered
-/// static → almost-static → dynamic to maximise the cacheable prefix.
-#[allow(clippy::too_many_arguments)]
-pub fn build_augmented_system_prompt(
-    base_prompt: &str,
-    identity: &BTreeMap<String, String>,
-    prompts: &PromptLoader,
-    storage: &StorageService,
-    user_handle: &Handle,
-    agent_handle: &Handle,
-    skills: &[Skill],
-    agent_summaries: &[(String, String)],
-    mcp_servers: &[(String, String)],
-    user_timezone: &str,
-) -> String {
-    let mut result = base_prompt.to_string();
-=======
 /// Renders standing instructions and skill expansions.
 /// Callers persist dynamic text once; replay never renders it again.
 #[derive(Clone)]
@@ -292,7 +250,6 @@ pub struct AgentPromptBuilder {
     memory: std::sync::Arc<dyn crate::memory::service::MemoryService>,
     skills: crate::agent::skill::service::SkillService,
 }
->>>>>>> upstream
 
 impl AgentPromptBuilder {
     pub fn new(
@@ -323,31 +280,6 @@ impl AgentPromptBuilder {
         crate::chat::command::render::try_render_skill(name, prompt, &skills)
     }
 
-<<<<<<< ours
-    let skill_items: Vec<(String, String)> = skills
-        .iter()
-        .filter(|s| !s.disable_model_invocation)
-        .map(|s| {
-            (
-                s.name.clone(),
-                format!("{} (file: {}/SKILL.md)", s.description, s.path),
-            )
-        })
-        .collect();
-    append_tagged_section(&mut result, "available_skills", None, &skill_items, None);
-||||||| base
-    let skill_items: Vec<(String, String)> = skills
-        .iter()
-        .filter(|s| !s.disable_model_invocation)
-        .map(|s| {
-            (
-                s.name.clone(),
-                format!("{} (file: {}/SKILL.md)", s.description, s.path),
-            )
-        })
-        .collect();
-    append_tagged_section(&mut result, "available_skills", None, &skill_items);
-=======
     pub async fn build(
         &self,
         base_prompt: &str,
@@ -381,98 +313,25 @@ impl AgentPromptBuilder {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect::<Vec<_>>(),
+            None,
         );
         // The wrapper is stable even when the first server is installed.
         if let Some(instructions) = self.prompts.read("MCP.md") {
             result.push_str("\n\n");
             result.push_str(&instructions);
         }
->>>>>>> upstream
 
         for text in additional_instructions {
             result.push_str("\n\n");
             result.push_str(text);
         }
-<<<<<<< ours
-        append_tagged_section(&mut result, "mcpservers", None, mcp_servers, None);
-||||||| base
-        append_tagged_section(&mut result, "mcpservers", None, mcp_servers);
-=======
         let memory = self.memory.instructions(user).await?;
         if !memory.is_empty() {
             result.push_str("\n\n");
             result.push_str(&memory);
         }
         Ok(result)
->>>>>>> upstream
     }
-<<<<<<< ours
-
-    append_tagged_section(
-        &mut result,
-        "available_agents",
-        prompts.read("AVAILABLE_AGENTS.md").as_deref(),
-        &agent_summaries.delegable,
-        denied_delegation_note(&agent_summaries.denied).as_deref(),
-    );
-
-    let identity_pairs: Vec<(String, String)> = identity
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    append_tagged_section(&mut result, "agent_identity", None, &identity_pairs, None);
-
-    // Date-only keeps this byte-stable within a day so prefix caches stay warm.
-    let tz: chrono_tz::Tz = user_timezone.parse().unwrap_or(chrono_tz::UTC);
-    let now_local = chrono::Utc::now().with_timezone(&tz);
-    let items = vec![
-        (
-            "current_date_local".to_string(),
-            format!(
-                "{} ({})",
-                now_local.format("%Y-%m-%d"),
-                now_local.format("%A")
-            ),
-        ),
-        ("user_timezone".to_string(), user_timezone.to_string()),
-    ];
-    append_tagged_section(&mut result, "temporal_context", None, &items, None);
-
-    result
-||||||| base
-
-    append_tagged_section(
-        &mut result,
-        "available_agents",
-        prompts.read("AVAILABLE_AGENTS.md").as_deref(),
-        agent_summaries,
-    );
-
-    let identity_pairs: Vec<(String, String)> = identity
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    append_tagged_section(&mut result, "agent_identity", None, &identity_pairs);
-
-    // Date-only keeps this byte-stable within a day so prefix caches stay warm.
-    let tz: chrono_tz::Tz = user_timezone.parse().unwrap_or(chrono_tz::UTC);
-    let now_local = chrono::Utc::now().with_timezone(&tz);
-    let items = vec![
-        (
-            "current_date_local".to_string(),
-            format!(
-                "{} ({})",
-                now_local.format("%Y-%m-%d"),
-                now_local.format("%A")
-            ),
-        ),
-        ("user_timezone".to_string(), user_timezone.to_string()),
-    ];
-    append_tagged_section(&mut result, "temporal_context", None, &items);
-
-    result
-=======
->>>>>>> upstream
 }
 
 #[cfg(test)]
@@ -694,7 +553,6 @@ mod tests {
             "[CALL_CONNECTED: Now speaking with Alice (+1234567890). Goal: Schedule meeting.]"
         );
     }
-<<<<<<< ours
 
     #[test]
     fn a_server_names_its_tools_so_no_call_is_spent_discovering_them() {
@@ -724,36 +582,6 @@ mod tests {
     fn a_server_with_no_cached_tools_still_points_at_help() {
         let line = mcp_server_line("weather", "Forecasts", &[]);
         assert_eq!(line, "Forecasts. Tools: run `mcpctl weather --help`");
-    }
-
-    #[test]
-    fn assembler_places_base_prompt() {
-        let prompts = PromptLoader::new(shared_prompts_dir());
-        let storage = StorageService::new(&crate::core::config::Config::default());
-        let mut identity = BTreeMap::new();
-        for k in ["name", "creature", "vibe"] {
-            identity.insert(k.to_string(), "x".to_string());
-        }
-        let prompt = build_augmented_system_prompt(
-            "BASE_PROMPT_MARKER",
-            &identity,
-            &prompts,
-            &storage,
-            &crate::handle!("user"),
-            &crate::handle!("agent"),
-            &[],
-            &AgentSummaries::default(),
-            &[],
-            "UTC",
-        );
-        assert!(
-            prompt.starts_with("BASE_PROMPT_MARKER"),
-            "base prompt leads"
-        );
-        assert!(
-            prompt.contains("<temporal_context>"),
-            "dynamic temporal tail present"
-        );
     }
 
     /// A section with no items and nothing to explain stays out of the prompt.
@@ -816,97 +644,4 @@ mod tests {
 
     /// End to end through the assembler: denied-only summaries still reach the
     /// prompt as a section.
-    #[test]
-    fn the_assembler_emits_available_agents_when_every_agent_was_denied() {
-        let prompts = PromptLoader::new(shared_prompts_dir());
-        let storage = StorageService::new(&crate::core::config::Config::default());
-        let mut identity = BTreeMap::new();
-        for k in ["name", "creature", "vibe"] {
-            identity.insert(k.to_string(), "x".to_string());
-        }
-        let summaries = AgentSummaries {
-            delegable: Vec::new(),
-            denied: vec!["Researcher".to_string()],
-        };
-        let prompt = build_augmented_system_prompt(
-            "BASE",
-            &identity,
-            &prompts,
-            &storage,
-            &crate::handle!("user"),
-            &crate::handle!("agent"),
-            &[],
-            &summaries,
-            &[],
-            "UTC",
-        );
-        // The closing tag, not the opening one: TOOLS.md tells the agent to
-        // "check `<available_agents>`" in prose, so the opener is in every
-        // prompt whether or not the section was emitted.
-        assert!(
-            prompt.contains("</available_agents>"),
-            "denied agents still open the section:\n{prompt}"
-        );
-        assert!(
-            prompt.contains("Not delegable from here: Researcher."),
-            "{prompt}"
-        );
-    }
-
-    /// No colleagues at all - nothing to report, so no section, as before.
-    #[test]
-    fn the_assembler_omits_available_agents_for_a_lone_agent() {
-        let prompts = PromptLoader::new(shared_prompts_dir());
-        let storage = StorageService::new(&crate::core::config::Config::default());
-        let mut identity = BTreeMap::new();
-        for k in ["name", "creature", "vibe"] {
-            identity.insert(k.to_string(), "x".to_string());
-        }
-        let prompt = build_augmented_system_prompt(
-            "BASE",
-            &identity,
-            &prompts,
-            &storage,
-            &crate::handle!("user"),
-            &crate::handle!("agent"),
-            &[],
-            &AgentSummaries::default(),
-            &[],
-            "UTC",
-        );
-        assert!(!prompt.contains("</available_agents>"), "{prompt}");
-    }
-||||||| base
-
-    #[test]
-    fn assembler_places_base_prompt() {
-        let prompts = PromptLoader::new(shared_prompts_dir());
-        let storage = StorageService::new(&crate::core::config::Config::default());
-        let mut identity = BTreeMap::new();
-        for k in ["name", "creature", "vibe"] {
-            identity.insert(k.to_string(), "x".to_string());
-        }
-        let prompt = build_augmented_system_prompt(
-            "BASE_PROMPT_MARKER",
-            &identity,
-            &prompts,
-            &storage,
-            &crate::handle!("user"),
-            &crate::handle!("agent"),
-            &[],
-            &[],
-            &[],
-            "UTC",
-        );
-        assert!(
-            prompt.starts_with("BASE_PROMPT_MARKER"),
-            "base prompt leads"
-        );
-        assert!(
-            prompt.contains("<temporal_context>"),
-            "dynamic temporal tail present"
-        );
-    }
-=======
->>>>>>> upstream
-}
+    /// No colleagues at all - nothing to report, so no section, as before.}

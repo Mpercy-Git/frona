@@ -29,7 +29,6 @@ pub struct InferenceUsage {
     pub model_id: String,
     pub model_ref: String,
 
-<<<<<<< ours
     // Usage. **Convention:** `input_tokens` is the WHOLE prompt and
     // `cached_input_tokens` a labelled subset of it, so fresh input is
     // `input_tokens - cached_input_tokens` and the cache ratio is
@@ -42,16 +41,6 @@ pub struct InferenceUsage {
     // fidelity" section for why we can't split Anthropic cache_creation vs
     // cache_read on the streaming path. Cache writes are therefore counted
     // inside `input_tokens` but not broken out here.
-||||||| base
-    // Usage. `cached_input_tokens` is rig's collapsed view - see plan
-    // "Cache fidelity" section for why we can't split Anthropic
-    // cache_creation vs cache_read on the streaming path.
-=======
-    /// Total prompt input: fresh tokens, cache reads, and cache writes. Cache
-    /// reads are a subset; input minus reads includes writes, not just fresh.
-    /// The normalization migration recovers historical input from provider
-    /// totals when consistent; unrecoverable rows retain their original counts.
->>>>>>> upstream
     pub input_tokens: u64,
     pub cached_input_tokens: u64,
     pub output_tokens: u64,

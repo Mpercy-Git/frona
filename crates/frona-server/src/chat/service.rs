@@ -15,16 +15,8 @@ use crate::inference::ModelProviderRegistry;
 use crate::inference::conversation::{
     ConversationBuilder, ConversationContext, DefaultConversationBuilder,
 };
-<<<<<<< ours
-use crate::inference::text_inference;
 use crate::notification::models::{NotificationData, NotificationLevel};
 use crate::notification::service::NotificationService;
-||||||| base
-use crate::inference::provider::service::ModelProviderService;
-use crate::inference::text_inference;
-=======
-use crate::inference::provider::service::ModelProviderService;
->>>>>>> upstream
 use crate::storage::StorageService;
 use context::effective_signature;
 use rig_core::completion::Message as RigMessage;
@@ -113,12 +105,6 @@ impl ChatService {
             crate::db::repo::chat_summaries::SurrealChatSummaryRepo::new(message_repo.db().clone()),
             message_repo.clone(),
             std::sync::Arc::new(super::compactor::TextInferenceSummarizer::new(
-<<<<<<< ours
-                provider_registry.clone(),
-||||||| base
-                model_providers.clone(),
-=======
->>>>>>> upstream
                 usage_service.clone(),
             )),
             prompts.clone(),
@@ -145,7 +131,6 @@ impl ChatService {
         }
     }
 
-<<<<<<< ours
     /// Attach the share service so [`ChatService::get_accessible`] can honor
     /// read-only shares. Call once at startup before the service is cloned.
     pub fn set_share_service(
@@ -242,8 +227,6 @@ impl ChatService {
             .ok()
     }
 
-||||||| base
-=======
     pub async fn build_system_prompt(
         &self,
         config: &AgentConfig,
@@ -262,7 +245,6 @@ impl ChatService {
             .await
     }
 
->>>>>>> upstream
     fn broadcast_chat_entity(&self, chat: &Chat, action: crate::chat::broadcast::EntityAction) {
         self.broadcast.broadcast_entity_updated(
             &chat.user_id,
@@ -570,44 +552,21 @@ impl ChatService {
     }
 
     pub async fn persist_inbound_message(&self, msg: &Message) -> Result<Message, AppError> {
-<<<<<<< ours
-        let chat = self.chat_repo.find_by_id(&msg.chat_id).await.ok().flatten();
-        let mut msg = msg.clone();
-        if let Some(chat) = &chat {
-            self.transcribe_voice_notes(&chat.user_id, &mut msg.attachments)
-                .await;
-        }
-        let saved = self.message_repo.create(&msg).await?;
-        if let Some(chat) = chat {
-            self.broadcast_message_persisted(
-                &saved,
-                &chat,
-                crate::chat::broadcast::EntityAction::Created,
-            );
-        }
-||||||| base
-        let saved = self.message_repo.create(msg).await?;
-        if let Ok(Some(chat)) = self.chat_repo.find_by_id(&saved.chat_id).await {
-            self.broadcast_message_persisted(
-                &saved,
-                &chat,
-                crate::chat::broadcast::EntityAction::Created,
-            );
-        }
-=======
         let chat = self
             .find_chat(&msg.chat_id)
             .await?
             .ok_or_else(|| AppError::NotFound("Chat".into()))?;
+        let mut msg = msg.clone();
+        self.transcribe_voice_notes(&chat.user_id, &mut msg.attachments)
+            .await;
         let saved = self
-            .persist_prepared_message(&chat, msg.clone(), None, None)
+            .persist_prepared_message(&chat, msg, None, None)
             .await?;
         self.broadcast_message_persisted(
             &saved,
             &chat,
             crate::chat::broadcast::EntityAction::Created,
         );
->>>>>>> upstream
         Ok(saved)
     }
 
@@ -767,54 +726,12 @@ impl ChatService {
 
         let model_group_name = agent_config.model_group;
 
-<<<<<<< ours
-        let model_group = self.provider_registry.get_model_group(&model_group_name)?;
-        let max_output = model_group
-            .max_tokens
-            .unwrap_or(model_group.inference.default_max_tokens) as usize;
-        // Fetched ahead of compaction: the replayed tool calls are most of what
-        // this conversation will weigh, so the compactor has to see them.
-        let tool_calls = self.get_tool_calls(chat_id).await?;
-        let loaded = self
-            .compactor
-            .compact_chat(
-                user_id,
-                chat_id,
-                &chat.agent_id,
-                &system_prompt,
-                &tool_calls,
-                model_group.context_window,
-                max_output,
-            )
-            .await?
-            .conversation;
-||||||| base
-        let model_group = self
-            .model_providers
-            .resolve(&crate::inference::ModelRef(model_group_name.clone().into()))?;
-        let max_output = model_group
-            .max_tokens
-            .unwrap_or(model_group.inference.default_max_tokens) as usize;
-        let loaded = self
-            .compactor
-            .compact_chat(
-                user_id,
-                chat_id,
-                &chat.agent_id,
-                &system_prompt,
-                model_group.context_window,
-                max_output,
-            )
-            .await?
-            .conversation;
-=======
-        let model_group = self.model_providers.resolve_with_fallback(
+        let model_group = self.provider_registry.resolve_with_fallback(
             &crate::inference::ModelRef(model_group_name.clone().into()),
             &crate::inference::ModelRef::PRIMARY,
         )?;
         let loaded = self.compactor.load_conversation(chat_id).await?;
         let agent_context = loaded.agent_context;
->>>>>>> upstream
         let conversation_summary = loaded.summary;
         let mut stored_messages = loaded.messages;
         let request_index = stored_messages
@@ -837,15 +754,8 @@ impl ChatService {
             model_ref: model_group.main.clone(),
             user_id: user_id.to_string(),
         };
-<<<<<<< ours
-        let mut rig_history = conv_builder
-||||||| base
-        let tool_calls = self.get_tool_calls(chat_id).await?;
-        let mut rig_history = conv_builder
-=======
         let tool_calls = self.get_tool_calls(chat_id).await?;
         let mut model_history = conv_builder
->>>>>>> upstream
             .build(
                 &stored_messages,
                 &tool_calls,
@@ -855,7 +765,33 @@ impl ChatService {
             .await;
         model_history.set_summary_context(agent_context.as_deref());
 
-<<<<<<< ours
+        let compacted = self
+            .compactor
+            .compact_chat(
+                chat_id,
+                super::compactor::CompactionContext {
+                    agent_context: scope,
+                    system_prompt: &system_prompt,
+                    model_group: &model_group,
+                    model_history: &model_history,
+                    tools: &[],
+                },
+            )
+            .await?;
+        let response_signature = if compacted.compacted {
+            use crate::chat::repository::ChatSummaryRepository;
+            crate::db::repo::chat_summaries::SurrealChatSummaryRepo::new(
+                self.message_repo.db().clone(),
+            )
+            .find_by_chat_id(chat_id)
+            .await?
+            .and_then(|s| s.agent_context_signature)
+            .or(request_signature)
+        } else {
+            request_signature
+        };
+        let mut rig_history = compacted.model_history.history;
+
         let catalog_vision = self
             .usage_service
             .model_supports_vision(&conv_ctx.model_ref);
@@ -893,37 +829,6 @@ impl ChatService {
                 }
             }
         }
-
-        rig_history.push(RigMessage::user(&req.content));
-||||||| base
-        rig_history.push(RigMessage::user(&req.content));
-=======
-        let compacted = self
-            .compactor
-            .compact_chat(
-                chat_id,
-                super::compactor::CompactionContext {
-                    agent_context: scope,
-                    system_prompt: &system_prompt,
-                    model_group: &model_group,
-                    model_history: &model_history,
-                    tools: &[],
-                },
-            )
-            .await?;
-        let response_signature = if compacted.compacted {
-            use crate::chat::repository::ChatSummaryRepository;
-            crate::db::repo::chat_summaries::SurrealChatSummaryRepo::new(
-                self.message_repo.db().clone(),
-            )
-            .find_by_chat_id(chat_id)
-            .await?
-            .and_then(|s| s.agent_context_signature)
-            .or(request_signature)
-        } else {
-            request_signature
-        };
-        let rig_history = compacted.model_history.history;
         let input_token_estimate = compacted.input_token_estimate;
 
         super::compactor::validate_initial_context(
@@ -933,7 +838,6 @@ impl ChatService {
             &[],
             input_token_estimate,
         )?;
->>>>>>> upstream
         // Pre-allocate the message id so the usage row's message_id matches
         // the assistant Message that's about to be persisted.
         let assistant_message_id = crate::core::repository::new_id();
@@ -946,25 +850,6 @@ impl ChatService {
             user_id,
             model_group.name.clone(),
         );
-<<<<<<< ours
-        let response_text = text_inference(
-            model_group,
-            &system_prompt,
-            rig_history,
-            &self.usage_service,
-            &usage_ctx,
-        )
-        .await?;
-||||||| base
-        let response_text = text_inference(
-            &model_group,
-            &system_prompt,
-            rig_history,
-            &self.usage_service,
-            &usage_ctx,
-        )
-        .await?;
-=======
         let response = model_group
             .inference(crate::inference::ModelRequest {
                 input_token_estimate,
@@ -973,12 +858,15 @@ impl ChatService {
                 tools: vec![],
                 usage_service: &self.usage_service,
                 usage_context: &usage_ctx,
-                overrides: Default::default(),
+                // Honour the group's own output ceiling, as `text_inference` does.
+                overrides: crate::inference::RequestOverrides {
+                    max_tokens: model_group.max_tokens,
+                    ..Default::default()
+                },
             })
             .await?;
         let response_text =
             crate::inference::provider::extract_text_from_choice(&response.content)?;
->>>>>>> upstream
 
         let mut assistant_message = Message::builder(chat_id, MessageRole::Agent, response_text)
             .agent_id(chat.agent_id.clone())
@@ -1167,7 +1055,6 @@ impl ChatService {
         .await
     }
 
-<<<<<<< ours
     /// True when `chat_id` is the working chat of background work — a
     /// delegated sub-task, a cron job or run, or a signal watch. Replies there
     /// are intermediate steps the user did not ask to hear about; the outcome
@@ -1198,8 +1085,6 @@ impl ChatService {
         }
     }
 
-||||||| base
-=======
     /// Persist a message in the task's own chat using the task already held by its executor.
     pub async fn save_task_message(
         &self,
@@ -1418,7 +1303,6 @@ impl ChatService {
         Ok(saved)
     }
 
->>>>>>> upstream
     /// Skips broadcasting - an empty Executing row would render as a phantom
     /// message in the UI while tokens stream.
     async fn save_message(&self, message: Message) -> Result<MessageResponse, AppError> {
@@ -2333,33 +2217,6 @@ impl ChatService {
             agent.user_id.clone(),
             model_group.name.clone(),
         );
-<<<<<<< ours
-        let result = text_inference(
-            &model_group,
-            &parsed.template,
-            vec![RigMessage::user(user_content)],
-            &self.usage_service,
-            &usage_ctx,
-        )
-        .await?;
-||||||| base
-        let crate::inference::ModelResponse {
-            content: contents, ..
-        } = model_group
-            .inference(crate::inference::ModelRequest {
-                system_prompt: &parsed.template,
-                history: vec![RigMessage::user(user_content)],
-                tools: vec![],
-                usage_service: &self.usage_service,
-                usage_context: &usage_ctx,
-                overrides: crate::inference::RequestOverrides {
-                    max_tokens: Some(TITLE_MAX_TOKENS),
-                    temperature: None,
-                },
-            })
-            .await?;
-        let result = crate::inference::provider::extract_text_from_choice(&contents)?;
-=======
         let crate::inference::ModelResponse {
             content: contents, ..
         } = model_group
@@ -2377,7 +2234,6 @@ impl ChatService {
             })
             .await?;
         let result = crate::inference::provider::extract_text_from_choice(&contents)?;
->>>>>>> upstream
 
         let title = parse_title_response(&result, user_content);
         self.update_chat_title(chat_id, &title).await?;

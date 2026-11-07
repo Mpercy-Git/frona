@@ -591,23 +591,6 @@ fn convert_agent_with_tool_calls(
             assistant_items.push(AssistantContent::text(text));
         }
         for te in tes {
-<<<<<<< ours
-            let call = rig_core::completion::message::ToolCall::from_wire(
-                &te.provider_call_id,
-                rig_core::completion::message::ToolFunction::new(
-                    te.name.clone(),
-                    te.arguments.clone(),
-                ),
-            )
-            .with_signature(te.signature.clone());
-            assistant_items.push(AssistantContent::ToolCall(call));
-||||||| base
-            assistant_items.push(AssistantContent::tool_call(
-                &te.provider_call_id,
-                &te.name,
-                te.arguments.clone(),
-            ));
-=======
             assistant_items.push(AssistantContent::ToolCall(
                 rig_core::completion::message::ToolCall::from_dual_wire(
                     te.provider_item_id.as_deref().unwrap_or_default(),
@@ -619,7 +602,6 @@ fn convert_agent_with_tool_calls(
                 )
                 .with_signature(te.signature.clone()),
             ));
->>>>>>> upstream
         }
         if !assistant_items.is_empty() {
             result.push(RigMessage::Assistant {

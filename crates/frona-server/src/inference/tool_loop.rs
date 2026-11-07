@@ -457,13 +457,17 @@ async fn execute_tool_calls(
                     &active_chat(ctx)?.id,
                     message_id,
                     turn,
-                    &tool_call.id,
+                    tool_call.wire_call_id(),
+                    tool_call
+                        .provider
+                        .as_ref()
+                        .and_then(|provider| provider.item_id.clone()),
+                    tool_call.signature.clone(),
                     tool_name,
                     &arguments,
                     description,
                     current_turn_text,
                     current_turn_reasoning,
-                    tool_call.signature.clone(),
                 )
                 .await?;
             te_records.push(te_record);
@@ -544,7 +548,6 @@ async fn execute_tool_calls(
                 }
             };
 
-<<<<<<< ours
             let hitl_emitted = tool_output.as_ref().and_then(|o| o.hitl().cloned());
             let task_event_emitted = tool_output.as_ref().and_then(|o| o.task_event().cloned());
             let sp = tool_output
@@ -553,116 +556,6 @@ async fn execute_tool_calls(
 
             if let Some(ref output) = tool_output {
                 extend_unique_attachments(all_attachments, output.attachments());
-||||||| base
-        // Persist record BEFORE execution (crash resilience).
-        // Stamp turn-level metadata (text + reasoning) on the FIRST tool_call
-        // of the turn - both fields gate on the same `turn_metadata_used`
-        // flag so they stay paired even when turn_text is None.
-        let (current_turn_text, current_turn_reasoning) = if !turn_metadata_used {
-            turn_metadata_used = true;
-            (turn_text.map(|s| s.to_string()), turn_reasoning.cloned())
-        } else {
-            (None, None)
-        };
-        let mut te_record = chat_service
-            .begin_tool_call(
-                &te_id,
-                &active_chat(ctx)?.id,
-                message_id,
-                turn,
-                &tool_call.id,
-                tool_name,
-                &arguments,
-                description.clone(),
-                current_turn_text,
-                current_turn_reasoning,
-            )
-            .await?;
-
-        let start = Instant::now();
-        let (text, tool_output) = match tool_registry.execute(tool_name, arguments, ctx).await {
-            Ok(output) => {
-                let text = output.text_content().to_string();
-                tracing::debug!(tool = %tool_name, result = %text, "Tool executed");
-                let duration = start.elapsed();
-                metrics::record_tool_call(
-                    tool_name,
-                    &ctx.user.id,
-                    &ctx.agent.id,
-                    duration,
-                    "success",
-                );
-                (text, Some(output))
-            }
-            Err(e) => {
-                tracing::warn!(tool = %tool_name, error = %e, "Tool execution failed");
-                let duration = start.elapsed();
-                metrics::record_tool_call(
-                    tool_name,
-                    &ctx.user.id,
-                    &ctx.agent.id,
-                    duration,
-                    "error",
-                );
-                (format!("Error: {e}"), None)
-=======
-        // Persist record BEFORE execution (crash resilience).
-        // Stamp turn-level metadata (text + reasoning) on the FIRST tool_call
-        // of the turn - both fields gate on the same `turn_metadata_used`
-        // flag so they stay paired even when turn_text is None.
-        let (current_turn_text, current_turn_reasoning) = if !turn_metadata_used {
-            turn_metadata_used = true;
-            (turn_text.map(|s| s.to_string()), turn_reasoning.cloned())
-        } else {
-            (None, None)
-        };
-        let mut te_record = chat_service
-            .begin_tool_call(
-                &te_id,
-                &active_chat(ctx)?.id,
-                message_id,
-                turn,
-                tool_call.wire_call_id(),
-                tool_call
-                    .provider
-                    .as_ref()
-                    .and_then(|provider| provider.item_id.clone()),
-                tool_call.signature.clone(),
-                tool_name,
-                &arguments,
-                description.clone(),
-                current_turn_text,
-                current_turn_reasoning,
-            )
-            .await?;
-
-        let start = Instant::now();
-        let (text, tool_output) = match tool_registry.execute(tool_name, arguments, ctx).await {
-            Ok(output) => {
-                let text = output.text_content().to_string();
-                tracing::debug!(tool = %tool_name, result = %text, "Tool executed");
-                let duration = start.elapsed();
-                metrics::record_tool_call(
-                    tool_name,
-                    &ctx.user.id,
-                    &ctx.agent.id,
-                    duration,
-                    "success",
-                );
-                (text, Some(output))
-            }
-            Err(e) => {
-                tracing::warn!(tool = %tool_name, error = %e, "Tool execution failed");
-                let duration = start.elapsed();
-                metrics::record_tool_call(
-                    tool_name,
-                    &ctx.user.id,
-                    &ctx.agent.id,
-                    duration,
-                    "error",
-                );
-                (format!("Error: {e}"), None)
->>>>>>> upstream
             }
 
             let success = tool_output.as_ref().is_some_and(|o| o.is_success());
@@ -717,62 +610,9 @@ async fn execute_tool_calls(
                     .as_ref()
                     .is_some_and(|o| o.is_pending_external());
 
-<<<<<<< ours
             if is_pending_external {
                 result.external_tools.push((te_response, tool_call_result));
-||||||| base
-        if is_pending_external {
-            result.external_tools.push((te_response, tool_call_result));
-        } else {
-            event_tx.send(InferenceEvent {
-                kind: InferenceEventKind::ToolResult {
-                    name: tool_name.clone(),
-                    result: text.clone(),
-                    success,
-                },
-            });
-            if let Some(sp_value) = sp {
-                result.accumulated_system_prompts.push(sp_value);
-            }
-            result.internal_tool_results.push(tool_call_result);
-            if let Some(output) = tool_output {
-                let msg = build_tool_result_message(
-                    tool_call.id.clone(),
-                    tool_call.provider.clone(),
-                    tool_name.clone(),
-                    text,
-                    &output,
-                );
-                chat_history.push(msg);
-=======
-        if is_pending_external {
-            result.external_tools.push((te_response, tool_call_result));
-        } else {
-            event_tx.send(InferenceEvent {
-                kind: InferenceEventKind::ToolResult {
-                    name: tool_name.clone(),
-                    result: text.clone(),
-                    success,
-                },
-            });
-            if let Some(sp_value) = sp {
-                result.accumulated_system_prompts.push(sp_value);
-            }
-            result.internal_tool_results.push(tool_call_result);
-            if let Some(output) = tool_output {
-                let msg = build_tool_result_message(
-                    tool_call.id.clone(),
-                    tool_call.provider.clone(),
-                    tool_name.clone(),
-                    text,
-                    &output,
-                );
-                if let RigMessage::User { content } = msg {
-                    turn_results.extend(content);
-                }
->>>>>>> upstream
             } else {
-<<<<<<< ours
                 event_tx.send(InferenceEvent {
                     kind: InferenceEventKind::ToolResult {
                         name: tool_name.clone(),
@@ -792,34 +632,17 @@ async fn execute_tool_calls(
                         text,
                         &output,
                     );
-                    chat_history.push(msg);
+                    if let RigMessage::User { content } = msg {
+                        turn_results.extend(content);
+                    }
                 } else {
-                    chat_history.push(RigMessage::User {
-                        content: vec![UserContent::ToolResult(ToolResult {
-                            call: tool_call.id.clone(),
-                            provider: tool_call.provider.clone(),
-                            name: tool_name.clone(),
-                            content: vec![ToolResultContent::text(&text)],
-                        })],
-                    });
-                }
-||||||| base
-                chat_history.push(RigMessage::User {
-                    content: vec![UserContent::ToolResult(ToolResult {
+                    turn_results.push(UserContent::ToolResult(ToolResult {
                         call: tool_call.id.clone(),
                         provider: tool_call.provider.clone(),
                         name: tool_name.clone(),
                         content: vec![ToolResultContent::text(&text)],
-                    })],
-                });
-=======
-                turn_results.push(UserContent::ToolResult(ToolResult {
-                    call: tool_call.id.clone(),
-                    provider: tool_call.provider.clone(),
-                    name: tool_name.clone(),
-                    content: vec![ToolResultContent::text(&text)],
-                }));
->>>>>>> upstream
+                    }));
+                }
             }
         }
 
@@ -938,11 +761,11 @@ pub async fn run_tool_loop(
             ctx.user.id.clone(),
             model_group.name.clone(),
         );
-<<<<<<< ours
         let stream_result = loop {
             let result = model_group
                 .stream_inference(
                     crate::inference::ModelRequest {
+                        input_token_estimate: input_token_estimate.take(),
                         system_prompt: &current_system_prompt,
                         history: chat_history.clone(),
                         tools: rig_tools.clone(),
@@ -985,42 +808,6 @@ pub async fn run_tool_loop(
             }
         };
         let contents = match stream_result {
-||||||| base
-        let contents = match (model_group)
-            .stream_inference(
-                crate::inference::ModelRequest {
-                    system_prompt: &current_system_prompt,
-                    history: chat_history.to_vec(),
-                    tools: rig_tools.to_vec(),
-                    usage_service,
-                    usage_context: &turn_usage_ctx,
-                    overrides: Default::default(),
-                },
-                &event_tx,
-                &cancel_token,
-                &mut turn_text,
-            )
-            .await?
-        {
-=======
-        let contents = match (model_group)
-            .stream_inference(
-                crate::inference::ModelRequest {
-                    input_token_estimate: input_token_estimate.take(),
-                    system_prompt: &current_system_prompt,
-                    history: chat_history.to_vec(),
-                    tools: rig_tools.to_vec(),
-                    usage_service,
-                    usage_context: &turn_usage_ctx,
-                    overrides: Default::default(),
-                },
-                &event_tx,
-                &cancel_token,
-                &mut turn_text,
-            )
-            .await?
-        {
->>>>>>> upstream
             StreamResult::Contents { content, usage: _ } => content,
             StreamResult::Cancelled => {
                 return Ok(ToolLoopOutcome::Cancelled(turn_text));
@@ -1150,35 +937,6 @@ mod tests {
     use rig_core::completion::AssistantContent;
 
     #[test]
-<<<<<<< ours
-    fn bridge_model_definitions_offer_the_wrapper_without_native_mcp_expansion() {
-        let definitions = ["mcpctl", "mcp__demo__echo", "read"].map(|name| ToolDefinition {
-            id: name.into(),
-            provider_id: String::new(),
-            description: String::new(),
-            parameters: serde_json::json!({"type":"object"}),
-        });
-        let bridge = to_rig_tool_definitions(&definitions, true);
-        assert_eq!(
-            bridge
-                .iter()
-                .map(|tool| tool.name.as_str())
-                .collect::<Vec<_>>(),
-            ["mcpctl", "read"]
-        );
-        let native = to_rig_tool_definitions(&definitions[1..], false);
-        assert_eq!(
-            native
-                .iter()
-                .map(|tool| tool.name.as_str())
-                .collect::<Vec<_>>(),
-            ["mcp__demo__echo", "read"]
-        );
-    }
-
-    #[test]
-||||||| base
-=======
     fn bridge_model_definitions_offer_the_wrapper_without_native_mcp_expansion() {
         let definitions = ["mcpctl", "mcp__demo__echo", "read"].map(|name| ToolDefinition {
             id: name.into(),
@@ -1223,7 +981,6 @@ mod tests {
     }
 
     #[test]
->>>>>>> upstream
     fn extract_reasoning_from_contents() {
         let contents = vec![
             AssistantContent::Reasoning(
