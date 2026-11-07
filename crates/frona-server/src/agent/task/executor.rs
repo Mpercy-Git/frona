@@ -1215,7 +1215,7 @@ impl TaskExecutor {
         {
             self.harness
                 .chat_service
-                .cancel_agent_message(message)
+                .cancel_agent_message(message, true)
                 .await?;
         }
         Ok(())

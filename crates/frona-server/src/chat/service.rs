@@ -1805,7 +1805,6 @@ impl ChatService {
         description: Option<String>,
         turn_text: Option<String>,
         turn_reasoning: Option<Reasoning>,
-        signature: Option<String>,
     ) -> Result<ToolCall, AppError> {
         let te = ToolCall {
             id: id.to_string(),
@@ -1826,7 +1825,6 @@ impl ChatService {
             description,
             turn_text,
             turn_reasoning,
-            signature,
             created_at: chrono::Utc::now(),
         };
         self.tool_call_repo.create(&te).await?;

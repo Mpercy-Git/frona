@@ -641,7 +641,4 @@ mod tests {
     fn nothing_denied_means_no_note() {
         assert!(denied_delegation_note(&[]).is_none());
     }
-
-    /// End to end through the assembler: denied-only summaries still reach the
-    /// prompt as a section.
-    /// No colleagues at all - nothing to report, so no section, as before.}
+}

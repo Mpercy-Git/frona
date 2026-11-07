@@ -499,7 +499,7 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
         // a WHERE that is already true rather than a second clause-shape to
         // maintain.
         let (window_clause, bindings) = window_clause(since, until);
-        let query = format!("{ROLLUP_SELECT} WHERE true{window_clause} GROUP ALL");
+        let query = format!("SELECT {ROLLUP_FIELDS} FROM inference_usage WHERE true{window_clause} GROUP ALL");
         let mut req = self.db().query(&query);
         for (k, v) in bindings {
             req = req.bind((k, v));

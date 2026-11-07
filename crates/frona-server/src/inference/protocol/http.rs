@@ -69,10 +69,9 @@ fn transport_cause(error: &(dyn std::error::Error + 'static)) -> String {
     // query credentials, DNS names, or arbitrary text supplied by a connector.
     if let Some(error) = error.downcast_ref::<reqwest::Error>() {
         format!(
-            "reqwest(timeout={}, connect={}, dns={})",
+            "reqwest(timeout={}, connect={})",
             error.is_timeout(),
-            error.is_connect(),
-            error.is_dns()
+            error.is_connect()
         )
     } else if let Some(error) = error.downcast_ref::<hyper_util::client::legacy::Error>() {
         format!("http client(connect={})", error.is_connect())
@@ -357,10 +356,8 @@ mod tests {
             for streaming in [false, true] {
                 let endpoint = format!("http://{SECRET}.invalid");
                 let captured = capture_send(&client, &endpoint, streaming).await;
-                assert!(request_error(&captured).is_dns());
                 assert!(format!("{:?}", captured.result.as_ref().unwrap_err()).contains(SECRET));
                 assert_failure_log(&captured.logs, streaming);
-                assert!(captured.logs.contains("dns=true"));
                 if depth == 1 {
                     assert!(captured.logs.contains("io(kind=ConnectionRefused"));
                     assert!(captured.logs.contains("truncated=false"));
