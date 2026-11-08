@@ -1,12 +1,12 @@
 # Base
-ca-certificates=20250419~deb12u1
+ca-certificates=20250419~deb12u2
 libgfortran5=12.2.0-14+deb12u1
 libopenblas0=0.3.21+ds-4
 
 # Network
 curl=7.88.1-10+deb12u15
 wget=1.21.3-1+deb12u1
-dnsutils=1:9.18.49-1~deb12u2
+bind9-dnsutils=1:9.18.49-1~deb12u3
 iputils-ping=3:20221126-1+deb12u1
 
 # VCS / SSH
@@ -19,7 +19,8 @@ xz-utils=5.4.1-1+deb12u1
 zip=3.0-13
 
 # Image processing
-imagemagick-6.q16=8:6.9.11.60+dfsg-1.6+deb12u13
+# Unpinned: the previous pin vanished from the archive; re-pin with build/update-versions.sh.
+imagemagick-6.q16
 libjpeg62-turbo=1:2.1.5-2
 libopenjp2-7=2.5.0-2+deb12u3
 librsvg2-bin=2.54.7+dfsg-1~deb12u1
