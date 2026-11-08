@@ -180,6 +180,7 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
     }
     state.tool_manager.init(&state);
     state.policy_service.sync_base_policies().await.unwrap();
+    state.vault_service.sync_config_connections().await.unwrap();
     (state, tmp)
 }
 

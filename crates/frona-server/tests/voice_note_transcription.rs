@@ -32,6 +32,39 @@ async fn seed_user(db: &surrealdb::Surreal<surrealdb::engine::local::Db>, id: &s
         .unwrap();
 }
 
+/// Sending a message binds agent context, so the chat's agent must exist.
+async fn seed_agent(
+    db: &surrealdb::Surreal<surrealdb::engine::local::Db>,
+    user_id: &str,
+    agent_id: &str,
+) {
+    SurrealRepo::<frona::agent::models::Agent>::new(db.clone())
+        .create(&frona::agent::models::Agent {
+            id: agent_id.into(),
+            user_id: user_id.into(),
+            handle: frona::core::Handle::try_new(agent_id).unwrap(),
+            name: "Voice Agent".into(),
+            description: String::new(),
+            model_group: "primary".into(),
+            enabled: true,
+            skills: None,
+            sandbox_limits: None,
+            max_concurrent_tasks: None,
+            avatar: None,
+            voice_id: None,
+            private_memory: false,
+            identity: Default::default(),
+            prompt: None,
+            heartbeat_interval: None,
+            next_heartbeat_at: None,
+            heartbeat_chat_id: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .await
+        .unwrap();
+}
+
 fn audio(owner: &str, path: &str) -> Attachment {
     Attachment {
         filename: path.rsplit('/').next().unwrap().to_string(),
@@ -48,6 +81,7 @@ fn audio(owner: &str, path: &str) -> Attachment {
 async fn transcribes_only_voice_notes_in_the_chat_owners_storage() {
     let (mut chat_service, db) = test_chat_service_with_db().await;
     seed_user(&db, "owner").await;
+    seed_agent(&db, "owner", "agent-1").await;
     seed_user(&db, "other").await;
     let now = Utc::now();
     let chat: Chat = SurrealRepo::new(db.clone())
@@ -143,6 +177,7 @@ async fn transcribes_only_voice_notes_in_the_chat_owners_storage() {
 async fn without_a_provider_voice_notes_are_saved_untouched() {
     let (chat_service, db) = test_chat_service_with_db().await;
     seed_user(&db, "owner").await;
+    seed_agent(&db, "owner", "agent-1").await;
     let now = Utc::now();
     let chat: Chat = SurrealRepo::new(db.clone())
         .create(&Chat {

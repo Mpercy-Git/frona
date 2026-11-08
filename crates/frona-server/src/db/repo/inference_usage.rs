@@ -640,11 +640,7 @@ impl InferenceUsageRepository for SurrealRepo<InferenceUsage> {
         let query = format!(
             "SELECT \
                 time::floor(created_at, {dur}) AS bucket, \
-                math::sum(input_tokens) AS input_tokens, \
-                math::sum(cached_input_tokens) AS cached_input_tokens, \
-                math::sum(output_tokens) AS output_tokens, \
-                <float>math::sum(cost_usd ?? 0.0) AS cost_usd, \
-                count() AS calls \
+                {ROLLUP_FIELDS} \
                 FROM inference_usage \
                 WHERE created_at >= $since AND created_at < $until \
                 GROUP BY bucket \
@@ -678,11 +674,7 @@ impl SurrealRepo<InferenceUsage> {
         let query = format!(
             "SELECT \
                 {column} AS key, \
-                math::sum(input_tokens) AS input_tokens, \
-                math::sum(cached_input_tokens) AS cached_input_tokens, \
-                math::sum(output_tokens) AS output_tokens, \
-                <float>math::sum(cost_usd ?? 0.0) AS cost_usd, \
-                count() AS calls \
+                {ROLLUP_FIELDS} \
                 FROM inference_usage \
                 WHERE true{window_clause} \
                 GROUP BY {column}"

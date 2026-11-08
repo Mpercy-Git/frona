@@ -169,7 +169,7 @@ pub(super) async fn serve_open_file(
             .header(header::REFERRER_POLICY, "no-referrer")
             .header(
                 header::CONTENT_DISPOSITION,
-                content_disposition(filename, content_type, download),
+                content_disposition(filename, download),
             );
         if matches!(
             content_type,
@@ -221,18 +221,8 @@ pub(super) async fn serve_open_file(
     Ok(response.unwrap())
 }
 
-fn content_disposition(filename: &str, content_type: &str, download: bool) -> String {
-    // SVG and other script-executable types are never rendered inline from here:
-    // that would execute them at the app origin.
-    let forced = matches!(
-        content_type,
-        "image/svg+xml" | "text/html" | "text/javascript" | "application/javascript"
-    );
-    let disposition = if download || forced {
-        "attachment"
-    } else {
-        "inline"
-    };
+fn content_disposition(filename: &str, download: bool) -> String {
+    let disposition = if download { "attachment" } else { "inline" };
     // Path separators and control characters are never useful in a suggested
     // filename, including on clients whose path rules differ from the server's.
     let filename: String = filename
