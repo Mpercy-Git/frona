@@ -21,7 +21,7 @@ You deploy Frona on your own infrastructure and keep full control of your data. 
 
 ## ⭐ Fork Enhancements — Unique to This Repository
 
-> **This is a fork of [fronalabs/frona](https://github.com/fronalabs/frona).** Everything in this section is **exclusive to this fork** and is *not* present in upstream. Images are published to `ghcr.io/mpercy-git/frona`, not the upstream registry.
+> **This is a fork of [fronalabs/frona](https://github.com/fronalabs/frona).** Most of this section is **exclusive to this fork**. A few items have since been matched by upstream (last checked against upstream `main` at v2026.11.0, 4 Nov 2026); those carry an *Upstream overlap* note and are not claimed as unique. This fork also periodically ports upstream fixes, so shared hardening is not listed as fork-only. Images are published to `ghcr.io/mpercy-git/frona`, not the upstream registry.
 
 The features and fixes below have been added on top of upstream. They are maintained here and do not exist in `fronalabs/frona`.
 
@@ -62,6 +62,7 @@ Upstream hands an agent a voice note as a file path it has no way to listen to, 
 ### 🧭 OpenRouter routing, caching & cost accounting (net-new)
 
 - **Routing preferences actually reach OpenRouter.** The config models provider preferences as `provider_routing` so the key doesn't collide with the `provider` enum discriminant, but the live request path never renamed it back — so `order`, `sort`, `ignore` and `quantizations` shipped under a key the API doesn't read and were silently dropped. They are now sent as the `provider` object OpenRouter documents
+- *Upstream overlap:* upstream has since added automatic Anthropic prompt caching (25 Oct 2026), cache-write pricing as a separate rate (18 Oct) and a catalogue-family pricing fallback (18 Oct). What remains specific to this fork is the system-prompt breakpoint across providers, the per-model-group `prompt_caching: false` opt-out, and the OpenRouter routing controls below
 - **Prompt caching on by default.** A `cache_control` breakpoint is placed on the system prompt, so the large, stable system prompt and tool definitions that every turn of a tool loop resends are billed at the cache-read rate instead of the fresh-input rate on providers that honour explicit breakpoints (Anthropic, Gemini). Providers that cache automatically ignore the marker. Per-model-group opt-out via `prompt_caching: false` for one-shot workloads, where the cache write is never read back
 - **More of the cost and privacy controls exposed**: a hard `max_price` ceiling (a request no provider can serve under it fails instead of routing somewhere expensive), an `only` hard allowlist, `data_collection: deny`, and `zdr`
 - **`route` is documented and constrained correctly** — it is model-level fallback routing whose only accepted value is `fallback`, not a provider name as the UI previously suggested
@@ -80,18 +81,22 @@ Every call has always recorded a `cost_usd` priced from the models.dev catalogue
 - **Reports recommend, never apply.** Model groups and providers stay edited by a human who read the report. Calls the catalogue can't price are surfaced as a *pricing gap* rather than counted as free — unmeasured spend being the more dangerous of the two failure modes
 - Built-in agents can now declare `groups:` (restricting a privileged built-in to a user group instead of cloning it into every account as an agent that can do nothing) and `cron:` (seeding a recurring task on first clone, editable and deletable like any other task)
 
-### ☁️ Azure OpenAI (net-new)
+### ☁️ Azure OpenAI
 
-Upstream has no Azure entry, and Azure doesn't fit the shared provider plumbing: it keys off a per-resource endpoint plus a data-plane version in the query string, and addresses models by *deployment* name.
+> *Upstream overlap:* upstream added its own Azure OpenAI adapter in September 2026, so this is no longer unique to the fork. The notes below describe this fork's wiring.
+
+Azure doesn't fit the shared provider plumbing: it keys off a per-resource endpoint plus a data-plane version in the query string, and addresses models by *deployment* name.
 
 - **`azure` provider** — `base_url` is your resource endpoint, `api_version` pins the data-plane version (it gates which request fields are accepted), and a model group's `model` is the deployment name you chose in Azure
 - `api_version` is a new field on provider config, surfaced in the settings UI for Azure only, and auto-discovered from `AZURE_OPENAI_API_KEY` / `AZURE_OPENAI_ENDPOINT` / `AZURE_OPENAI_API_VERSION`
 - Azure hosts the same gpt-5/o-series models as OpenAI, so it gets the same `max_tokens` → `max_completion_tokens` rewrite those models require
 - A configured `api_key` is sent as the resource key, not as an Entra ID bearer token — rig's default `Into<String>` conversion picks the token path, which is not what an `api_key` field means everywhere else in this config
 
-### 🔌 Any OpenAI-compatible endpoint, plus four more providers (net-new)
+### 🔌 Any OpenAI-compatible endpoint, plus four more providers
 
-Upstream wires each provider by name, and `init_provider` hard-errors on anything else. `provider: generic` *parsed* — `ProviderModel::from_name` has always mapped it — but had no arm in the registry, and provider init only logs a warning on failure, so the provider silently didn't exist and the config surfaced as `ProviderNotConfigured` much later. The only workaround was naming your provider `openai` with a custom `base_url`, which drags in the gpt-5/o-series `max_tokens` → `max_completion_tokens` rewrite that vLLM, LM Studio and llama.cpp's server all reject.
+> *Upstream overlap:* upstream's newer provider rework also handles `provider: generic`. The extra named providers below (Z.ai, Venice, MiniMax, BytePlus, llamafile) were not found upstream.
+
+Before the provider rework, upstream wired each provider by name, and `init_provider` hard-errored on anything else. `provider: generic` *parsed* — `ProviderModel::from_name` has always mapped it — but had no arm in the registry, and provider init only logs a warning on failure, so the provider silently didn't exist and the config surfaced as `ProviderNotConfigured` much later. The only workaround was naming your provider `openai` with a custom `base_url`, which drags in the gpt-5/o-series `max_tokens` → `max_completion_tokens` rewrite that vLLM, LM Studio and llama.cpp's server all reject.
 
 - **`generic` now works** — point it at any OpenAI-compatible `/chat/completions` endpoint. `base_url` required, `api_key` optional (local servers usually ignore it), and `max_tokens` is sent unchanged. Covers vLLM, LM Studio, llama.cpp's server, LiteLLM and other proxies, and hosted services with no dedicated entry, without a code change each
 - **Z.ai (GLM)**, **Venice** (privacy-focused, no-logging), and **MiniMax** added as named API-key providers, with auto-discovery from `ZAI_API_KEY` / `VENICE_API_KEY` / `MINIMAX_API_KEY`
@@ -139,7 +144,7 @@ Every agent shares one memory: user-scoped facts (Basic) or a user-scoped knowle
 - **The agent can find and add skills itself** — upstream, an agent only sees the skills already installed, so a task nobody installed a skill for looks like a task no skill exists for. `search_skills` reads the registry (keyword search, or a repo listing with descriptions) and `add_skill` proposes an install that pauses for the user's approval — the same consent shape as the vault: the agent can ask, but nothing is written without a yes. Approved skills land on this agent or on every agent the user owns, and are usable on the very next turn
 - **Wake an agent from outside, with a token that can do nothing else** — `POST /api/agents/{id}/trigger` opens a chat, posts a message (with up to four images the model sees on its first turn) and starts the agent at once. The owner mints a trigger token per agent from the agent's **Triggers** settings, where tokens are also listed and revoked; Frona's token check refuses it on every other route, so a token in a doorbell bridge's or webhook's config can't open the account. Rate-limited per agent
 - **Tasks created through the API start straight away** — `POST /api/tasks` used to leave a due task for the scheduler sweep, up to a minute away
-- **MCP tools can return images** — a picture an MCP server sends back (a camera snapshot, a chart) reaches a vision model instead of being dropped
+- **MCP tools can return images** (*upstream added its own implementation on 19 Oct 2026, after this fork's*) — a picture an MCP server sends back (a camera snapshot, a chart) reaches a vision model instead of being dropped
 - **Website citations in task completion summaries** — sources from `web_search`/`web_fetch` are preserved structurally rather than surviving only if the model happens to retype them
 
 ### ⚡ Fewer tool calls per task (fork-only)
@@ -151,9 +156,11 @@ The same work, in a fraction of the round-trips — each one is a full re-send o
 - **Independent reads run at the same time.** Upstream executes a turn's tool calls strictly one after another, so three `web_fetch`es cost the sum of their latencies. Consecutive read-only calls (`read`, `glob`, `grep`, `web_search`, `web_fetch`, `memory_search`, …) now run concurrently, up to eight at once, and their results still reach the model in the order it asked for them. Anything that writes, drives the shared browser session, talks to a person or can pause the loop — and every MCP tool, whose effects frona can't know — still runs alone, in place, so a `write` always lands before the `read` emitted after it
 - **The prompts stopped asking for the opposite.** The memory guidance said "treat every field as a separate lookup. Don't batch"; it now distinguishes separate *lookups* (right) from separate *calls* (waste), and a **Tool Economy** section in the tool guide states the rule once: batch, emit independent calls together, don't verify what the tool already confirmed, don't re-fetch what's already in context
 
-### 🛡️ Security & correctness hardening (fork-only fixes)
+### 🛡️ Security & correctness hardening
 
-A dedicated review pass fixed issues not present upstream, including:
+> *Upstream overlap:* upstream landed a large hardening pass of its own on 16–18 Oct 2026 (OAuth state expiry, atomic refresh-token consumption, presigned-download binding, workspace path and preview isolation, MCP log ownership, tool-approval binding, task-delete authorisation, login-lockout normalisation, reliable task stop). This fork ported or already had equivalents of those, so the matching items below (OAuth CSRF state TTL, refresh-token replay, presigned-token subject validation, path-traversal and stored-XSS guards, IDOR fixes, failed-login lockout, "Stop actually stops") should be read as shared, not unique. The rest of this list was not found upstream.
+
+A dedicated review pass fixed issues in this fork, including:
 
 - SSRF guard on push subscription endpoints; IDOR fixes on tool-call and MCP log endpoints; presigned-token subject validation; refresh-token replay race; OAuth CSRF state TTL; path-traversal guards on workspace and file routes; stored-XSS mitigation for served SVG/HTML
 - UTF-8 byte-index truncation panics fixed; cancelled-scheduler push state fix; config `GET /api/config` now reads from disk so saved settings don't silently revert; a channel leaves `Setup` for `Disconnected` once required fields are provided
@@ -316,7 +323,7 @@ Frona auto-discovers providers from your configuration and routes different task
 
 **LLM:** Anthropic, OpenAI, Azure OpenAI, Google Gemini, DeepSeek, Mistral, Cohere, xAI (Grok), Groq, OpenRouter, Together, Perplexity, Hyperbolic, Moonshot, Z.ai (GLM), MiniMax, Venice, BytePlus ModelArk, Hugging Face, Mira, Galadriel, and Ollama or llamafile (local).
 
-Anything else that speaks the OpenAI `/chat/completions` API — vLLM, LM Studio, llama.cpp's server, a LiteLLM proxy, or a hosted service with no dedicated entry — is reachable through `provider: generic`, no code change required. Azure OpenAI, BytePlus, Z.ai, Venice, MiniMax, llamafile and `generic` are [fork enhancements](#-fork-enhancements--unique-to-this-repository).
+Anything else that speaks the OpenAI `/chat/completions` API — vLLM, LM Studio, llama.cpp's server, a LiteLLM proxy, or a hosted service with no dedicated entry — is reachable through `provider: generic`, no code change required. BytePlus, Z.ai, Venice, MiniMax and llamafile are [fork enhancements](#-fork-enhancements--unique-to-this-repository).
 
 **Search:** SearXNG (self-hosted), Tavily, Brave Search, Keenable.
 
