@@ -1743,11 +1743,12 @@ async fn insert_tool_call(
             msg_id,
             turn,
             &format!("provider-{id}"),
+            None,
+            None,
             "stub_tool",
             &serde_json::json!({}),
             None,
             turn_text.map(String::from),
-            None,
             None,
         )
         .await
@@ -2267,6 +2268,7 @@ async fn channel_button_resolution_resumes_inference() {
         .unwrap();
     }
     let tc = frona::inference::tool_call::ToolCall {
+        provider_item_id: None,
         id: frona::core::repository::new_id(),
         chat_id: setup.chat.id.clone(),
         message_id: msg.id.clone(),

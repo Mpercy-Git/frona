@@ -379,6 +379,7 @@ export interface ChatRuntimeOptions {
 
 export function useChatRuntime({ chatId, agentId, onChatCreated }: ChatRuntimeOptions) {
   const toast = useToast();
+  // Only URL-less image previews need the local File; keep them within this runtime's lifetime.
   const localImageFiles = useRef(new Map<string, File>()).current;
   const currentChatIdRef = useRef<string | null>(chatId ?? null);
   currentChatIdRef.current = chatId ?? currentChatIdRef.current;

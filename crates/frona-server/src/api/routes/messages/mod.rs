@@ -161,19 +161,16 @@ async fn resolve_tool_calls(
             .get_tool_call(&resolution.tool_call_id)
             .await
             .map_err(ApiError::from)?
+            // Authorizing the URL's chat does not authorize an arbitrary tool
+            // call ID. Bind it before either resolution path can have effects;
+            // a call in another chat is indistinguishable from a missing one.
+            .filter(|te| te.chat_id == chat_id)
             .ok_or_else(|| {
                 ApiError::from(crate::core::error::AppError::NotFound(format!(
                     "Tool call not found: {}",
                     resolution.tool_call_id
                 )))
             })?;
-
-        // Verify the tool call belongs to the chat the caller is authorized for.
-        if te.chat_id != chat_id {
-            return Err(ApiError::from(crate::core::error::AppError::Forbidden(
-                "Tool call does not belong to this chat".into(),
-            )));
-        }
 
         // Typed HitlResponse routes through the resolve_hitl dispatcher, which
         // runs the tool's on_resume side-effect and synthesizes the result text.

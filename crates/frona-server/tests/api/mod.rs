@@ -180,6 +180,7 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
     }
     state.tool_manager.init(&state);
     state.policy_service.sync_base_policies().await.unwrap();
+    state.vault_service.sync_config_connections().await.unwrap();
     (state, tmp)
 }
 
@@ -198,6 +199,7 @@ fn build_app(state: AppState) -> Router {
         .merge(routes::triggers::router())
         .merge(routes::push::router())
         .merge(routes::files::router(&state.config.server))
+        .merge(routes::share::router())
         .merge(routes::contacts::router())
         .merge(routes::navigation::router())
         .merge(routes::messages::router())

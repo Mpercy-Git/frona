@@ -60,6 +60,15 @@ pub struct InferenceContext {
 }
 
 impl InferenceContext {
+    pub fn agent_context_scope(&self) -> crate::agent::context::AgentContextScope<'_> {
+        crate::agent::context::AgentContextScope {
+            user: &self.user,
+            agent: &self.agent,
+            space_id: self.chat.as_ref().and_then(|chat| chat.space_id.as_deref()),
+            task: self.task.as_ref(),
+        }
+    }
+
     /// The normal chat-bound context. Callers keep passing a `Chat`; it's wrapped
     /// `Some` so every existing chat-path caller is unaffected.
     pub fn new(
@@ -157,6 +166,7 @@ pub struct InferenceRequest {
     /// model group's own inference/streaming (now self-contained via
     /// `model_group.providers`).
     pub registry: ModelProviderRegistry,
+    pub input_token_estimate: Option<crate::inference::context::InputTokenEstimate>,
     pub model_group: ModelGroup,
     pub system_prompt: String,
     pub history: Vec<RigMessage>,

@@ -155,6 +155,7 @@ mod resolve_path_tests {
                 updated_at: chrono::Utc::now(),
             },
             crate::chat::models::Chat {
+                agent_context_state: Default::default(),
                 id: "test-chat".into(),
                 user_id: "runner-id".into(),
                 space_id: None,

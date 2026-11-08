@@ -201,6 +201,10 @@ async fn save_initial_message_saves_on_first_run() {
     let mut task = make_task(TaskKind::Direct {
         source_chat_id: None,
     });
+    SurrealRepo::new(state.db.clone())
+        .create(&task)
+        .await
+        .unwrap();
     let chat_id = executor.ensure_task_chat(&mut task).await.unwrap();
 
     executor
@@ -213,8 +217,9 @@ async fn save_initial_message_saves_on_first_run() {
         .get_stored_messages(&chat_id)
         .await
         .unwrap();
-    assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].content, "Do something");
+    assert_eq!(messages.len(), 2);
+    assert!(messages[0].is_internal_context());
+    assert_eq!(messages[1].content, "Do something");
 }
 
 #[tokio::test]
@@ -224,6 +229,10 @@ async fn save_initial_message_skips_on_resume() {
     let mut task = make_task(TaskKind::Direct {
         source_chat_id: None,
     });
+    SurrealRepo::new(state.db.clone())
+        .create(&task)
+        .await
+        .unwrap();
     let chat_id = executor.ensure_task_chat(&mut task).await.unwrap();
 
     executor
@@ -240,7 +249,8 @@ async fn save_initial_message_skips_on_resume() {
         .get_stored_messages(&chat_id)
         .await
         .unwrap();
-    assert_eq!(messages.len(), 1);
+    assert_eq!(messages.len(), 2);
+    assert!(messages[0].is_internal_context());
 }
 
 #[tokio::test]
@@ -309,6 +319,14 @@ async fn handle_error_marks_failed_and_delivers() {
 #[tokio::test]
 async fn lifecycle_complete_event_detected() {
     let (state, _tmp) = test_app_state().await;
+    let mut task = make_task(TaskKind::Direct {
+        source_chat_id: None,
+    });
+    task.id = "task-1".into();
+    SurrealRepo::new(state.db.clone())
+        .create(&task)
+        .await
+        .unwrap();
     let source_chat = state
         .chat_service
         .create_chat(
@@ -366,6 +384,14 @@ async fn lifecycle_complete_event_detected() {
 #[tokio::test]
 async fn lifecycle_defer_event_detected() {
     let (state, _tmp) = test_app_state().await;
+    let mut task = make_task(TaskKind::Direct {
+        source_chat_id: None,
+    });
+    task.id = "task-2".into();
+    SurrealRepo::new(state.db.clone())
+        .create(&task)
+        .await
+        .unwrap();
     let task_chat = state
         .chat_service
         .create_chat(
@@ -733,6 +759,14 @@ async fn deliver_to_source_saves_message_to_user_chat() {
 #[tokio::test]
 async fn lifecycle_event_saved_after_assistant_message() {
     let (state, _tmp) = test_app_state().await;
+    let mut task = make_task(TaskKind::Direct {
+        source_chat_id: None,
+    });
+    task.id = "task-order".into();
+    SurrealRepo::new(state.db.clone())
+        .create(&task)
+        .await
+        .unwrap();
 
     let chat = state
         .chat_service
@@ -787,12 +821,13 @@ async fn lifecycle_event_saved_after_assistant_message() {
         .get_stored_messages(&chat.id)
         .await
         .unwrap();
-    assert_eq!(messages.len(), 2);
-    assert_eq!(messages[0].role, MessageRole::Agent);
-    assert_eq!(messages[0].content, "Here is my answer.");
-    assert_eq!(messages[1].role, MessageRole::System);
+    assert_eq!(messages.len(), 3);
+    assert!(messages[0].is_internal_context());
+    assert_eq!(messages[1].role, MessageRole::Agent);
+    assert_eq!(messages[1].content, "Here is my answer.");
+    assert_eq!(messages[2].role, MessageRole::System);
     assert!(matches!(
-        &messages[1].event,
+        &messages[2].event,
         Some(MessageEvent::TaskCompletion {
             status: TaskStatus::Completed,
             ..

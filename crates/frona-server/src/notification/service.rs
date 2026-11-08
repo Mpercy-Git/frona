@@ -380,6 +380,7 @@ mod tests {
             serde_json::json!({ "owner": image_owner, "path": "triggers/front-door/ring-0.jpg" }),
         );
         Chat {
+            agent_context_state: Default::default(),
             id: crate::core::repository::new_id(),
             user_id: user_id.to_string(),
             space_id: None,

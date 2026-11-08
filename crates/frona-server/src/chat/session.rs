@@ -1,21 +1,21 @@
+use std::sync::Arc;
+
 use rig_core::completion::Message as RigMessage;
 pub use tokio_util::sync::CancellationToken;
 
 use crate::agent::harness::Harness;
-use crate::agent::skill::resolver::Skill;
 use crate::chat::broadcast::EventSender;
-use crate::chat::command::render::render_skill;
-use crate::chat::message::models::{Message, MessageCommand, MessageRole};
+use crate::chat::message::models::{Message, MessageRole};
 use crate::chat::models::Chat;
 use crate::chat::service::AgentConfig;
 use crate::core::error::AppError;
 use crate::inference::ModelGroup;
 use crate::inference::ModelProviderRegistry;
 use crate::inference::conversation::{
-    ConversationBuilder, ConversationContext, resolve_attachment_path,
+    ConversationBuilder, ConversationContext, ModelConversationHistory, resolve_attachment_path,
 };
 use crate::tool::InferenceContext;
-use crate::tool::registry::AgentToolRegistry;
+use crate::tool::registry::{AgentToolRegistry, ToolFilter};
 
 pub struct ChatSessionContext {
     pub chat: Chat,
@@ -24,24 +24,56 @@ pub struct ChatSessionContext {
     pub model_group: ModelGroup,
     pub rig_history: Vec<RigMessage>,
     pub registry: ModelProviderRegistry,
+    pub(crate) model_history: ModelConversationHistory,
+    pub(crate) input_token_estimate: Option<crate::inference::context::InputTokenEstimate>,
+    pub(crate) builder: Arc<dyn ConversationBuilder>,
+    pub(crate) tool_filters: Vec<ToolFilter>,
+
     pub tool_registry: AgentToolRegistry,
     pub tool_ctx: InferenceContext,
     pub cancel_token: CancellationToken,
     /// The most recent user message as stored, captured while the history was
     /// loaded here. Callers that need it (slash-command dispatch in
     /// `Harness::run_loop`) would otherwise re-read every message in the chat
-    /// just to look at the last one. Raw — before the skill/command rewrites
-    /// applied to `rig_history` — because the caller persists edits to it.
+    /// just to look at the last one. Raw - before the skill/command rewrites
+    /// applied to the model history - because the caller persists edits to it.
     pub last_user_message: Option<Message>,
 }
 
 impl ChatSessionContext {
+    pub fn agent_context_scope(&self) -> crate::agent::context::AgentContextScope<'_> {
+        self.tool_ctx.agent_context_scope()
+    }
+
     pub async fn build(
         harness: &Harness,
         user_id: &str,
         chat: Chat,
         cancel_token: CancellationToken,
-        builder: Box<dyn ConversationBuilder>,
+        builder: Arc<dyn ConversationBuilder>,
+        tool_filters: &[ToolFilter],
+    ) -> Result<Self, AppError> {
+        Self::build_for_response(
+            harness,
+            user_id,
+            chat,
+            None,
+            cancel_token,
+            builder,
+            tool_filters,
+        )
+        .await
+    }
+
+    /// Agent switches reuse the already-initialized turn.
+    pub(crate) async fn build_for_response(
+        harness: &Harness,
+        user_id: &str,
+        chat: Chat,
+        response_id: Option<&str>,
+        cancel_token: CancellationToken,
+        builder: Arc<dyn ConversationBuilder>,
+        tool_filters: &[ToolFilter],
     ) -> Result<Self, AppError> {
         let event_sender: EventSender =
             harness
@@ -64,7 +96,7 @@ impl ChatSessionContext {
             .await?
             .ok_or_else(|| AppError::NotFound("User not found".into()))?;
 
-        // For a shared agent (runner ≠ owner), definition-scoped lookups must
+        // For a shared agent (runner != owner), definition-scoped lookups must
         // resolve under the OWNER: skills, agent workspace, sandbox policy.
         // For an owned agent this is just the runner's own handle.
         let agent_owner_handle = if agent.user_id == user_id {
@@ -81,24 +113,16 @@ impl ChatSessionContext {
             .await
             .unwrap_or(None);
 
-        let skills = harness
-            .skill_service
-            .list(
-                &agent_owner_handle,
-                &agent.handle,
-                agent_config.skills.as_deref(),
-            )
-            .await;
-
         // Load task early so `build_agent_registry` can register
         // task-domain tools in the same pass.
         let task = if let Some(ref task_id) = chat.task_id {
-            harness
-                .task_service
-                .find_by_id(task_id)
-                .await
-                .ok()
-                .flatten()
+            Some(
+                harness
+                    .task_service
+                    .find_by_id(task_id)
+                    .await?
+                    .ok_or_else(|| AppError::NotFound("Task".into()))?,
+            )
         } else {
             None
         };
@@ -139,146 +163,79 @@ impl ChatSessionContext {
             tool_registry.deny(&["send_message"]);
         }
 
-        let allowed_tool_groups = tool_registry.tool_groups();
-
-        let agent_summaries =
-            crate::tool::registry::build_agent_summaries(harness, user_id, &chat.agent_id).await;
-
-        // Resolved whatever the bridge setting is: the prompt section below is
-        // bridge-only, but every run wants to know which systems it can reach - a
-        // tool that turns the agent away from memory has to name somewhere to go.
-        let allowed_handles: std::collections::HashSet<String> = allowed_tool_groups
+        // Resolved whatever the bridge setting is: every run wants to know which
+        // MCP systems it can reach.
+        let allowed_handles: std::collections::HashSet<String> = tool_registry
+            .tool_groups()
             .iter()
             .filter_map(|id| id.strip_prefix("mcp:").map(|handle| handle.to_string()))
             .collect();
-        let running_servers: Vec<crate::tool::mcp::models::McpServer> =
-            if allowed_handles.is_empty() {
-                Vec::new()
-            } else {
-                harness
-                    .mcp_service
-                    .list_for_user(user_id)
-                    .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|s| s.status == crate::tool::mcp::models::McpServerStatus::Running)
-                    .filter(|s| allowed_handles.contains(s.handle.as_str()))
-                    .collect()
-            };
-        let mcp_handles: Vec<String> = running_servers
-            .iter()
-            .map(|s| s.handle.to_string())
-            .collect();
-
-        // `mcp_bridge_active`, not the raw config flag: the section below teaches
-        // `mcpctl`, which needs the shell. Emitting it for a shell-less agent
-        // would describe a bridge it cannot cross - and the same predicate gates
-        // hiding the `mcp__*` tools, so prompt and tool list never disagree.
-        let mcp_servers: Vec<(String, String)> = if tool_registry.mcp_bridge_active() {
-            running_servers
-                .into_iter()
-                .map(|s| {
-                    let desc = s.description.unwrap_or_else(|| s.display_name.clone());
-                    // The cache is populated when the server starts, so the tools
-                    // cost nothing to name here - and naming them is what stops a
-                    // discovery call, or a fallback to memory, standing in for the
-                    // call the question actually wanted.
-                    let tools: Vec<String> = s.tool_cache.iter().map(|t| t.name.clone()).collect();
-                    let handle = s.handle.to_string();
-                    let line = crate::agent::prompt::mcp_server_line(&handle, &desc, &tools);
-                    (handle, line)
-                })
-                .collect()
-        } else {
+        let mcp_handles: Vec<String> = if allowed_handles.is_empty() {
             Vec::new()
+        } else {
+            harness
+                .mcp_service
+                .list_for_user(user_id)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|s| s.status == crate::tool::mcp::models::McpServerStatus::Running)
+                .filter(|s| allowed_handles.contains(s.handle.as_str()))
+                .map(|s| s.handle.to_string())
+                .collect()
         };
 
         harness
             .mcp_service
             .register_agent_tool(&mut tool_registry, &harness.prompts);
 
-        let resolved_tz = user.resolved_timezone(&harness.config.server.timezone);
+        let registry = harness.chat_service.provider_registry().clone();
+        // `resolve_model_group` accepts both a named group and an ad-hoc
+        // "provider/model" reference; a missing named group falls back to primary.
+        let model_group = if agent_config.model_group.contains('/') {
+            registry.resolve_model_group(&agent_config.model_group)?
+        } else {
+            registry.resolve_with_fallback(
+                &crate::inference::ModelRef(agent_config.model_group.clone().into()),
+                &crate::inference::ModelRef::PRIMARY,
+            )?
+        };
 
-        let mut system_prompt = crate::agent::prompt::build_augmented_system_prompt(
-            &agent_config.system_prompt,
-            &agent_config.identity,
-            &harness.prompts,
-            &harness.storage_service,
-            &user.handle,
-            &agent.handle,
-            &skills,
-            &agent_summaries,
-            &mcp_servers,
-            &resolved_tz,
-        );
-
-        let model_group = harness
-            .chat_service
-            .provider_registry()
-            .resolve_model_group(&agent_config.model_group)?;
-
-        let max_output = model_group
-            .max_tokens
-            .unwrap_or(model_group.inference.default_max_tokens) as usize;
-        // Fetched before compaction, not after: the tool calls are most of what
-        // the builder will replay, so the compactor has to weigh them when it
-        // decides whether this conversation still fits.
-        let tool_calls = harness
-            .chat_service
-            .get_tool_calls(&chat.id)
-            .await
-            .unwrap_or_default();
         let loaded = harness
             .chat_service
             .compactor()
-            .compact_chat(
-                user_id,
-                &chat.id,
-                &chat.agent_id,
-                &system_prompt,
-                &tool_calls,
-                model_group.context_window,
-                max_output,
-            )
-            .await?
-            .conversation;
+            .load_conversation(&chat.id)
+            .await?;
+        let agent_context = loaded.agent_context;
         let conversation_summary = loaded.summary;
-        let stored_messages = loaded.messages;
-        // Captured before the rewrites below, which the caller must not see.
+        let mut stored_messages = loaded.messages;
+        if let Some(response_id) = response_id {
+            let response_index = stored_messages
+                .iter()
+                .position(|m| m.id == response_id)
+                .ok_or_else(|| {
+                    AppError::Conflict("Response is outside the active conversation".into())
+                })?;
+            stored_messages.truncate(response_index + 1);
+        }
+        let tool_calls = harness.chat_service.get_tool_calls(&chat.id).await?;
+        // Captured before the history is built and rewritten.
         let last_user_message = stored_messages
             .iter()
             .rev()
             .find(|m| matches!(m.role, MessageRole::User))
             .cloned();
-        // Apply two slash-command transformations to the message list the
-        // builder will see:
-        //   1. For user messages with `command: Some(Skill { name, prompt })`,
-        //      render the SKILL.md body and replace `content` with the
-        //      `<skill ...>...</skill>` form. Persistent DB row is untouched.
-        //   2. Drop assistant messages whose immediately-preceding message is
-        //      a user message with `command: Some(Command { … })`. Those are
-        //      synthetic acknowledgements for `/clear`, `/compact`, etc. -
-        //      user-facing chrome, not conversation the model needs.
-        let stored_messages = transform_for_commands(stored_messages, &skills);
 
         // Cron is already filtered from `task_in_progress`: TASK.md would prompt
         // complete_task → status=Completed → cron stops firing forever.
-        if task_in_progress && let Some(task_prompt) = harness.prompts.read("TASK.md") {
-            system_prompt.push_str("\n\n");
-            system_prompt.push_str(&task_prompt);
-        }
+        let task_prompt = task_in_progress
+            .then(|| harness.prompts.read("TASK.md"))
+            .flatten();
 
         if task_in_progress {
             tool_registry.apply_filter(&crate::tool::registry::ToolFilter::DenyList(&[
                 "create_recurring_task",
             ]));
-        }
-
-        for te in &tool_calls {
-            if let Some(sp) = &te.system_prompt {
-                system_prompt.push_str("\n\n");
-                system_prompt.push_str(sp);
-            }
         }
 
         let model_ref = model_group.main.clone();
@@ -288,36 +245,7 @@ impl ChatSessionContext {
             user_id: user_id.to_string(),
         };
 
-        if let Some(ref task) = task {
-            let tz: chrono_tz::Tz = resolved_tz.parse().unwrap_or(chrono_tz::UTC);
-            let fmt = "%Y-%m-%d %H:%M:%S %Z";
-            let mut items = vec![(
-                "created_at".into(),
-                task.created_at.with_timezone(&tz).format(fmt).to_string(),
-            )];
-            if let Some(run_at) = task.run_at {
-                items.push((
-                    "scheduled_at".into(),
-                    run_at.with_timezone(&tz).format(fmt).to_string(),
-                ));
-            }
-            items.push((
-                "now".into(),
-                chrono::Utc::now()
-                    .with_timezone(&tz)
-                    .format(fmt)
-                    .to_string(),
-            ));
-            crate::agent::prompt::append_tagged_section(
-                &mut system_prompt,
-                "task_time",
-                None,
-                &items,
-                None,
-            );
-        }
-
-        let mut rig_history = builder
+        let mut model_history = builder
             .build(
                 &stored_messages,
                 &tool_calls,
@@ -325,16 +253,16 @@ impl ChatSessionContext {
                 conversation_summary.as_deref(),
             )
             .await;
+        model_history.set_summary_context(agent_context.as_deref());
 
-        let registry = harness.chat_service.provider_registry().clone();
-
-        // Images can't go to a model that doesn't accept them — providers 404
+        // Images can't go to a model that doesn't accept them - providers 404
         // the whole request. Only act when the catalog positively reports no
         // vision support (unknown models are left untouched to avoid regressing
         // capable ones). Preferred handling: transcribe the images with a
         // vision-capable model (an override "vision" group, else auto-selected)
         // and inline the text so the agent still gets the content. If no vision
-        // model is available, strip the images so the turn still runs.
+        // model is available, strip the images so the turn still runs. Done on the
+        // model history itself so compaction weighs what will actually be sent.
         let catalog_vision = harness
             .usage_service
             .model_supports_vision(&conv_ctx.model_ref);
@@ -356,7 +284,7 @@ impl ChatSessionContext {
                         .map(|m| m.id.clone())
                         .unwrap_or_default();
                     let n = crate::inference::vision::transcribe_images_in_history(
-                        &mut rig_history,
+                        &mut model_history.history,
                         &vision_group,
                         &registry,
                         &harness.usage_service,
@@ -376,8 +304,9 @@ impl ChatSessionContext {
                     }
                 }
                 None => {
-                    let n =
-                        crate::inference::conversation::strip_images_from_history(&mut rig_history);
+                    let n = crate::inference::conversation::strip_images_from_history(
+                        &mut model_history.history,
+                    );
                     if n > 0 {
                         tracing::info!(
                             model = %conv_ctx.model_ref.as_str(),
@@ -404,6 +333,18 @@ impl ChatSessionContext {
                 }
             }
         }
+
+        let extra = builder.system_prompt();
+        let extra = extra
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty());
+        let additional_instructions: Vec<&str> =
+            task_prompt.as_deref().into_iter().chain(extra).collect();
+        let system_prompt = harness
+            .chat_service
+            .build_system_prompt(&agent_config, &user, &agent, &additional_instructions)
+            .await?;
 
         let mut tool_ctx = InferenceContext::new(
             user,
@@ -442,16 +383,39 @@ impl ChatSessionContext {
             vault_vars.extend(vault_env);
         }
 
-        {
-            let mut mcx = crate::memory::service::MemoryContext::new(
-                &mut system_prompt,
-                &mut rig_history,
-                &tool_ctx,
-            );
-            if let Err(e) = harness.memory_service.retrieve(&mut mcx).await {
-                tracing::warn!(error = %e, "memory retrieve failed; continuing without memory block");
-            }
+        let rig_history;
+
+        for filter in tool_filters {
+            tool_registry.apply_filter(filter);
         }
+        let tools = crate::inference::tool_loop::to_rig_tool_definitions(
+            tool_registry.definitions(),
+            tool_registry.mcp_bridge_active(),
+        );
+        let compacted = harness
+            .chat_service
+            .compactor()
+            .compact_chat(
+                &chat.id,
+                super::compactor::CompactionContext {
+                    agent_context: tool_ctx.agent_context_scope(),
+                    system_prompt: &system_prompt,
+                    model_group: &model_group,
+                    model_history: &model_history,
+                    tools: &tools,
+                },
+            )
+            .await?;
+        let input_token_estimate = compacted.input_token_estimate;
+        model_history = compacted.model_history;
+        rig_history = model_history.history.clone();
+        super::compactor::validate_initial_context(
+            &rig_history,
+            &system_prompt,
+            &model_group,
+            &tools,
+            input_token_estimate,
+        )?;
 
         Ok(Self {
             chat,
@@ -460,27 +424,15 @@ impl ChatSessionContext {
             model_group,
             rig_history,
             registry,
+            model_history,
+            input_token_estimate,
+            builder,
+            tool_filters: tool_filters.to_vec(),
+
             tool_registry,
             tool_ctx,
             cancel_token,
             last_user_message,
         })
     }
-}
-
-/// Rewrites Skill-command user messages to the rendered SKILL.md body for the
-/// model's view of this turn. The persisted DB row is untouched.
-fn transform_for_commands(messages: Vec<Message>, skills: &[Skill]) -> Vec<Message> {
-    let mut out: Vec<Message> = Vec::with_capacity(messages.len());
-    for mut msg in messages {
-        if matches!(msg.role, MessageRole::User)
-            && let Some(MessageCommand::Skill { name, prompt }) = msg.command.clone()
-            && let Some(rendered) = render_skill(&name, &prompt, skills)
-        {
-            msg.content = rendered;
-        }
-
-        out.push(msg);
-    }
-    out
 }

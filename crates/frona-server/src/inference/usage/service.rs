@@ -154,6 +154,7 @@ impl UsageService {
                 message_id: row.message_id.clone(),
                 kind_tag: row.kind_tag.clone(),
                 model_ref: row.model_ref.clone(),
+                total_tokens: row.total_tokens,
                 input_tokens: row.input_tokens,
                 cached_input_tokens: row.cached_input_tokens,
                 output_tokens: row.output_tokens,

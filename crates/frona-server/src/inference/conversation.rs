@@ -22,6 +22,99 @@ pub struct ConversationContext {
     pub user_id: String,
 }
 
+/// Native model history and the persisted-row boundaries that produced it.
+/// Zero-output rows still have an end offset; one assistant row owns all of its
+/// tool calls/results. The mapping is transient and never stored in the database.
+#[derive(Clone, Debug)]
+pub struct ModelConversationHistory {
+    pub history: Vec<RigMessage>,
+    pub row_ids: Vec<String>,
+    pub row_ends: Vec<usize>,
+    pub summary: Option<String>,
+    pub summary_end: usize,
+}
+
+impl ModelConversationHistory {
+    pub(crate) fn row_range(&self, row: usize) -> std::ops::Range<usize> {
+        let start = row
+            .checked_sub(1)
+            .map_or(self.summary_end, |i| self.row_ends[i]);
+        start..self.row_ends[row]
+    }
+
+    pub(crate) fn validate_source(
+        &self,
+        messages: &[Message],
+        summary: Option<&str>,
+    ) -> Result<(), crate::core::error::AppError> {
+        if !self
+            .row_ids
+            .iter()
+            .eq(messages.iter().map(|message| &message.id))
+            || self.summary.as_deref() != summary
+            || self.row_ends.len() != messages.len()
+            || self.summary_end > self.history.len()
+            || self
+                .row_ends
+                .iter()
+                .try_fold(self.summary_end, |previous, &end| {
+                    (end >= previous && end <= self.history.len()).then_some(end)
+                })
+                .is_none()
+        {
+            return Err(crate::core::error::AppError::Conflict(
+                "Model conversation history no longer matches the stored compaction source".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Replace whole stored rows, retaining their native tail and injected messages.
+    pub(crate) fn replace_prefix(&mut self, rows: usize, summary: &str) {
+        let prefix_end = self.row_range(rows - 1).end;
+        self.history
+            .splice(..prefix_end, [summary_message(summary)]);
+        self.row_ids.drain(..rows);
+        self.row_ends.drain(..rows);
+        for end in &mut self.row_ends {
+            *end = *end - prefix_end + 1;
+        }
+        self.summary = Some(summary.to_owned());
+        self.summary_end = 1;
+    }
+
+    /// Include the frozen agent context in the leading summary message so both
+    /// remain directly after the system prompt, including during history trimming.
+    pub fn set_summary_context(&mut self, context: Option<&str>) {
+        if let Some(summary) = self.summary.as_deref().filter(|s| !s.trim().is_empty()) {
+            self.history[0] = match context.filter(|s| !s.is_empty()) {
+                Some(context) => summary_message(&format!("{summary}\n\n{context}")),
+                None => summary_message(summary),
+            };
+        }
+    }
+
+    fn new(messages: &[Message], summary: Option<&str>) -> Self {
+        let mut history = Vec::new();
+        if let Some(summary) = summary.filter(|s| !s.trim().is_empty()) {
+            history.push(summary_message(summary));
+        }
+        Self {
+            summary_end: history.len(),
+            history,
+            row_ids: messages.iter().map(|m| m.id.clone()).collect(),
+            row_ends: Vec::with_capacity(messages.len()),
+            summary: summary.map(str::to_owned),
+        }
+    }
+}
+
+pub fn summary_message(summary: &str) -> RigMessage {
+    RigMessage::user(format!(
+        "<conversation_summary>\n{summary}\n</conversation_summary>"
+    ))
+}
+
 #[async_trait]
 pub trait ConversationBuilder: Send + Sync {
     /// `summary`: rolling summary of compacted-away earlier messages, prepended
@@ -32,7 +125,7 @@ pub trait ConversationBuilder: Send + Sync {
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
         summary: Option<&str>,
-    ) -> Vec<RigMessage>;
+    ) -> ModelConversationHistory;
 
     /// Turn-scoped system prompt appended to the agent's main system prompt.
     fn system_prompt(&self) -> Option<String> {
@@ -55,19 +148,14 @@ impl ConversationBuilder for DefaultConversationBuilder {
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
         summary: Option<&str>,
-    ) -> Vec<RigMessage> {
+    ) -> ModelConversationHistory {
         let te_map = group_tool_calls_by_message(tool_calls);
-        let mut result = Vec::with_capacity(messages.len() + 1);
-        // Compacted earlier conversation, re-injected as a leading message so
-        // the model sees the gist of what was summarized away.
-        if let Some(s) = summary
-            && !s.trim().is_empty()
-        {
-            result.push(RigMessage::user(format!(
-                "<conversation_summary>\n{s}\n</conversation_summary>"
-            )));
-        }
-        for msg in messages {
+        let mut model_history = ModelConversationHistory::new(messages, summary);
+        let result = &mut model_history.history;
+        for stored in messages {
+            let mut projected = stored.clone();
+            projected.content = stored.inference_content().to_owned();
+            let msg = &projected;
             match msg.role {
                 MessageRole::User | MessageRole::Contact => {
                     // Providers reject empty content blocks. Skip + warn.
@@ -78,6 +166,7 @@ impl ConversationBuilder for DefaultConversationBuilder {
                             role = ?msg.role,
                             "skipping empty user-side message in chat history (upstream produced a payload with no content and no attachments)",
                         );
+                        model_history.row_ends.push(result.len());
                         continue;
                     }
                     result.push(
@@ -99,6 +188,7 @@ impl ConversationBuilder for DefaultConversationBuilder {
                             chat_id = %msg.chat_id,
                             "skipping empty task-completion message in chat history (event-only row with no body)",
                         );
+                        model_history.row_ends.push(result.len());
                         continue;
                     }
                     let content = task_completion_content(msg);
@@ -135,7 +225,7 @@ impl ConversationBuilder for DefaultConversationBuilder {
                             tes,
                             &ctx.agent_id,
                             other_handle.as_deref(),
-                            &mut result,
+                            result,
                         );
                     } else if let Some(m) =
                         convert_agent_message(msg, &ctx.agent_id, other_handle.as_deref())
@@ -149,8 +239,9 @@ impl ConversationBuilder for DefaultConversationBuilder {
                     }
                 }
             };
+            model_history.row_ends.push(result.len());
         }
-        result
+        model_history
     }
 }
 
@@ -168,12 +259,19 @@ impl ConversationBuilder for TaskConversationBuilder {
         messages: &[Message],
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
-        _summary: Option<&str>,
-    ) -> Vec<RigMessage> {
+        summary: Option<&str>,
+    ) -> ModelConversationHistory {
         let te_map = group_tool_calls_by_message(tool_calls);
-        let mut result = Vec::with_capacity(messages.len());
-        let mut instruction_wrapped = false;
-        for msg in messages {
+        let mut model_history = ModelConversationHistory::new(messages, summary);
+        let result = &mut model_history.history;
+        // Task execution creates the initial instruction as the first stored
+        // Agent row. A summary already covers that row; retained Agent rows
+        // must keep their normal assistant/tool representation on reload.
+        let mut instruction_wrapped = summary.is_some();
+        for stored in messages {
+            let mut projected = stored.clone();
+            projected.content = stored.inference_content().to_owned();
+            let msg = &projected;
             match msg.role {
                 MessageRole::User | MessageRole::Contact => {
                     // Providers reject empty content blocks. Skip + warn.
@@ -184,6 +282,7 @@ impl ConversationBuilder for TaskConversationBuilder {
                             role = ?msg.role,
                             "skipping empty user-side message in chat history (upstream produced a payload with no content and no attachments)",
                         );
+                        model_history.row_ends.push(result.len());
                         continue;
                     }
                     result.push(
@@ -205,6 +304,7 @@ impl ConversationBuilder for TaskConversationBuilder {
                             chat_id = %msg.chat_id,
                             "skipping empty task-completion message in chat history (event-only row with no body)",
                         );
+                        model_history.row_ends.push(result.len());
                         continue;
                     }
                     let content = task_completion_content(msg);
@@ -247,7 +347,7 @@ impl ConversationBuilder for TaskConversationBuilder {
                                 tes,
                                 &ctx.agent_id,
                                 other_handle.as_deref(),
-                                &mut result,
+                                result,
                             );
                         } else if let Some(m) =
                             convert_agent_message(msg, &ctx.agent_id, other_handle.as_deref())
@@ -262,13 +362,14 @@ impl ConversationBuilder for TaskConversationBuilder {
                     }
                 }
             };
+            model_history.row_ends.push(result.len());
         }
         if let Some(prompt) = &self.continuation_prompt
             && !prompt.is_empty()
         {
             result.push(RigMessage::user(prompt));
         }
-        result
+        model_history
     }
 }
 
@@ -290,13 +391,13 @@ impl ConversationBuilder for HeartbeatConversationBuilder {
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
         summary: Option<&str>,
-    ) -> Vec<RigMessage> {
+    ) -> ModelConversationHistory {
         let default = DefaultConversationBuilder {
             user_service: self.user_service.clone(),
             storage_service: self.storage_service.clone(),
             agent_service: self.agent_service.clone(),
         };
-        let mut result = default.build(messages, tool_calls, ctx, summary).await;
+        let mut model_history = default.build(messages, tool_calls, ctx, summary).await;
 
         let mut injected = String::new();
         if let Some(prompt) = &self.continuation_prompt
@@ -309,8 +410,8 @@ impl ConversationBuilder for HeartbeatConversationBuilder {
         injected.push_str("<heartbeat_checklist file=\"HEARTBEAT.md\">\n");
         injected.push_str(&self.heartbeat_content);
         injected.push_str("\n</heartbeat_checklist>");
-        result.push(RigMessage::user(&injected));
-        result
+        model_history.history.push(RigMessage::user(&injected));
+        model_history
     }
 }
 
@@ -330,11 +431,15 @@ impl ConversationBuilder for ChannelConversationBuilder {
         messages: &[Message],
         tool_calls: &[ToolCall],
         ctx: &ConversationContext,
-        _summary: Option<&str>,
-    ) -> Vec<RigMessage> {
+        summary: Option<&str>,
+    ) -> ModelConversationHistory {
         let te_map = group_tool_calls_by_message(tool_calls);
-        let mut result = Vec::with_capacity(messages.len());
-        for msg in messages {
+        let mut model_history = ModelConversationHistory::new(messages, summary);
+        let result = &mut model_history.history;
+        for stored in messages {
+            let mut projected = stored.clone();
+            projected.content = stored.inference_content().to_owned();
+            let msg = &projected;
             match msg.role {
                 MessageRole::User | MessageRole::Contact => {
                     // Providers reject empty content blocks. Skip + warn.
@@ -345,6 +450,7 @@ impl ConversationBuilder for ChannelConversationBuilder {
                             role = ?msg.role,
                             "skipping empty user-side message in chat history (upstream produced a payload with no content and no attachments)",
                         );
+                        model_history.row_ends.push(result.len());
                         continue;
                     }
                     result.push(
@@ -366,6 +472,7 @@ impl ConversationBuilder for ChannelConversationBuilder {
                             chat_id = %msg.chat_id,
                             "skipping empty task-completion message in chat history (event-only row with no body)",
                         );
+                        model_history.row_ends.push(result.len());
                         continue;
                     }
                     let content = task_completion_content(msg);
@@ -402,7 +509,7 @@ impl ConversationBuilder for ChannelConversationBuilder {
                             tes,
                             &ctx.agent_id,
                             other_handle.as_deref(),
-                            &mut result,
+                            result,
                         );
                     } else if let Some(m) =
                         convert_agent_message(msg, &ctx.agent_id, other_handle.as_deref())
@@ -416,8 +523,9 @@ impl ConversationBuilder for ChannelConversationBuilder {
                     }
                 }
             };
+            model_history.row_ends.push(result.len());
         }
-        result
+        model_history
     }
 
     fn system_prompt(&self) -> Option<String> {
@@ -483,15 +591,17 @@ fn convert_agent_with_tool_calls(
             assistant_items.push(AssistantContent::text(text));
         }
         for te in tes {
-            let call = rig_core::completion::message::ToolCall::from_wire(
-                &te.provider_call_id,
-                rig_core::completion::message::ToolFunction::new(
-                    te.name.clone(),
-                    te.arguments.clone(),
-                ),
-            )
-            .with_signature(te.signature.clone());
-            assistant_items.push(AssistantContent::ToolCall(call));
+            assistant_items.push(AssistantContent::ToolCall(
+                rig_core::completion::message::ToolCall::from_dual_wire(
+                    te.provider_item_id.as_deref().unwrap_or_default(),
+                    &te.provider_call_id,
+                    rig_core::completion::message::ToolFunction {
+                        name: te.name.clone(),
+                        arguments: te.arguments.clone(),
+                    },
+                )
+                .with_signature(te.signature.clone()),
+            ));
         }
         if !assistant_items.is_empty() {
             result.push(RigMessage::Assistant {
@@ -516,6 +626,11 @@ fn convert_agent_with_tool_calls(
             result.push(RigMessage::User {
                 content: tool_results,
             });
+        }
+        for te in tes.iter() {
+            if let Some(instructions) = &te.system_prompt {
+                result.push(RigMessage::user(instructions));
+            }
         }
     }
 
@@ -859,6 +974,8 @@ mod tests {
 
     fn make_message(role: MessageRole, content: &str) -> Message {
         Message {
+            agent_context_signature: None,
+            processed_content: None,
             id: "m1".to_string(),
             chat_id: "c1".to_string(),
             role,
@@ -1138,6 +1255,7 @@ mod tests {
             message_id: msg.id.clone(),
             turn: 0,
             provider_call_id: String::new(),
+            provider_item_id: None,
             name: "web_search".to_string(),
             arguments: serde_json::json!({"q": "x"}),
             result: "ok".to_string(),

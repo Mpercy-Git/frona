@@ -266,6 +266,7 @@ fn task_target_uses_run_time_and_recurring_fire_time() {
 
 fn stored_call(id: &str, chat_id: &str, turn: u32) -> ToolCall {
     ToolCall {
+        provider_item_id: None,
         id: id.into(),
         chat_id: chat_id.into(),
         message_id: format!("message-{id}"),

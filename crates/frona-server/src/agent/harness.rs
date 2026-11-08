@@ -3,7 +3,6 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::prompt::PromptLoader;
 use crate::agent::service::AgentService;
-use crate::agent::skill::service::SkillService;
 use crate::agent::task::service::TaskService;
 use crate::auth::UserService;
 use crate::chat::broadcast::BroadcastService;
@@ -33,6 +32,11 @@ use crate::tool::mcp::McpServerService;
 use crate::tool::registry::ToolFilter;
 use rig_core::completion::Message as RigMessage;
 
+struct CommandPromptOverride {
+    request_id: String,
+    rendered_prompt: String,
+}
+
 pub struct AgentLoopOutcome {
     /// What inference produced (Completed text, Cancelled, ExternalToolPending,
     /// or Handled when a command short-circuited the turn).
@@ -54,7 +58,6 @@ pub struct Harness {
     pub(crate) storage_service: StorageService,
     pub(crate) agent_service: AgentService,
     pub(crate) memory_service: Arc<dyn MemoryService>,
-    pub(crate) skill_service: SkillService,
     pub(crate) task_service: TaskService,
     pub(crate) notification_service: crate::notification::service::NotificationService,
     pub(crate) vault_service: VaultService,
@@ -79,7 +82,6 @@ impl Harness {
         storage_service: StorageService,
         agent_service: AgentService,
         memory_service: Arc<dyn MemoryService>,
-        skill_service: SkillService,
         task_service: TaskService,
         notification_service: crate::notification::service::NotificationService,
         vault_service: VaultService,
@@ -104,7 +106,6 @@ impl Harness {
             storage_service,
             agent_service,
             memory_service,
-            skill_service,
             task_service,
             notification_service,
             vault_service,
@@ -568,23 +569,59 @@ impl Harness {
             .await?
             .ok_or_else(|| AppError::NotFound("Chat not found".into()))?;
 
+        // `message_id` is the AGENT response placeholder. The user message is
+        // separate. Signal/system-only chats may have no user-role message at
+        // all - then there's nothing to dispatch and we go straight to inference.
+        let request = self
+            .chat_service
+            .get_stored_messages(chat_id)
+            .await?
+            .into_iter()
+            .take_while(|m| m.id != message_id)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .find(|m| matches!(m.role, MessageRole::User));
+
         let mut response = self.chat_service.get_message(user_id, message_id).await?;
+        if cancel_token.is_cancelled() {
+            return Ok(AgentLoopOutcome {
+                inference: InferenceResponse::Cancelled(response.content.clone()),
+                response,
+            });
+        }
 
-        let builder_system_prompt = builder.system_prompt();
+        let mut chat_for_turn = chat.clone();
+        if let Some(request) = &request
+            && let Some(MessageCommand::Command { name, .. }) = &request.command
+            && self.commands.get(name).is_none()
+            && command_context_registry
+                .as_ref()
+                .and_then(|r| r.get(name))
+                .is_none()
+            && let Some(target) = self.agent_service.find_by_handle(user_id, name).await?
+        {
+            chat_for_turn.agent_id = target.id;
+        }
+        let mut session = ChatSessionContext::build_for_response(
+            self,
+            user_id,
+            chat_for_turn,
+            Some(message_id),
+            cancel_token.clone(),
+            builder.into(),
+            tool_filters,
+        )
+        .await?;
 
-        let mut session =
-            ChatSessionContext::build(self, user_id, chat.clone(), cancel_token.clone(), builder)
-                .await?;
+        if cancel_token.is_cancelled() {
+            return Ok(AgentLoopOutcome {
+                inference: InferenceResponse::Cancelled(response.content.clone()),
+                response,
+            });
+        }
 
-        // `message_id` is the AGENT response placeholder; the user message is
-        // separate. `build` already read the chat history, so take the user
-        // message from there rather than loading every message again just to
-        // inspect the last one. Signal/system-only chats may have no user-role
-        // message at all — then there's nothing to dispatch and we go straight
-        // to inference.
-        let request = session.last_user_message.clone();
-
-        let mut prompt_override: Option<String> = None;
+        let mut prompt_override: Option<CommandPromptOverride> = None;
         if let Some(mut request) = request
             && matches!(request.role, MessageRole::User)
             && let Some(MessageCommand::Command { name, args }) = request.command.clone()
@@ -594,14 +631,6 @@ impl Harness {
                 .find_by_id(user_id)
                 .await?
                 .ok_or_else(|| AppError::NotFound(format!("user {user_id}")))?;
-
-            let cmd = match command_context_registry.as_ref().and_then(|r| r.get(&name)) {
-                Some(c) => Some(c),
-                None => self.commands.resolve(&name, self, &user).await,
-            };
-            let cmd = cmd.ok_or_else(|| {
-                AppError::NotFound(format!("command '{name}' not registered for this chat"))
-            })?;
 
             // `response` is always written via the terminal API at end-of-turn,
             // so no snapshot is needed for it - only chat/request.
@@ -617,7 +646,24 @@ impl Harness {
                 response: &mut response,
             };
 
-            let outcome = cmd.run(&args, &mut cmd_ctx).await;
+            let outcome = if let Some(processed) = cmd_ctx
+                .request
+                .processed_content
+                .as_deref()
+                .filter(|text| !text.is_empty())
+            {
+                Ok(CommandOutcome::Prompt(processed.to_owned()))
+            } else {
+                let cmd = match command_context_registry.as_ref().and_then(|r| r.get(&name)) {
+                    Some(c) => Some(c),
+                    None => self.commands.resolve(&name, self, &user).await,
+                };
+                let cmd = cmd.ok_or_else(|| {
+                    AppError::NotFound(format!("command '{name}' not registered for this chat"))
+                })?;
+
+                cmd.run(&args, &mut cmd_ctx).await
+            };
 
             if chat != chat_snapshot {
                 let _ = self.chat_service.save_chat(&chat).await;
@@ -628,7 +674,19 @@ impl Harness {
 
             match outcome {
                 Ok(CommandOutcome::Prompt(rendered)) => {
-                    prompt_override = Some(rendered);
+                    request = self
+                        .chat_service
+                        .finalize_command_prompt(
+                            &request,
+                            &rendered,
+                            &session.agent_context_scope(),
+                        )
+                        .await?;
+                    response.agent_context_signature = request.agent_context_signature.clone();
+                    prompt_override = Some(CommandPromptOverride {
+                        request_id: request.id.clone(),
+                        rendered_prompt: request.inference_content().to_owned(),
+                    });
                 }
                 Ok(CommandOutcome::Message(text)) => {
                     response.content = text;
@@ -666,39 +724,80 @@ impl Harness {
         }
 
         let ChatSessionContext {
-            mut system_prompt,
+            system_prompt,
             model_group,
             mut rig_history,
             registry,
-            mut tool_registry,
+            model_history,
+            input_token_estimate,
+
+            tool_registry,
             tool_ctx,
             ..
         } = session;
 
-        if let Some(extra) = builder_system_prompt {
-            let trimmed = extra.trim();
-            if !trimmed.is_empty() {
-                system_prompt.push_str("\n\n");
-                system_prompt.push_str(trimmed);
-            }
-        }
-
-        for filter in tool_filters {
-            tool_registry.apply_filter(filter);
-        }
-
-        // Swap only the model's view; the persisted `Message.content` is untouched.
-        if let Some(rendered) = prompt_override
-            && let Some(last_user) = rig_history
-                .iter_mut()
-                .rev()
-                .find(|m| matches!(m, rig_core::completion::Message::User { .. }))
+        // Replace the invoking row, not an injected task/heartbeat continuation.
+        // Commands may insert context, so match the mapped request if offsets moved.
+        if let Some(CommandPromptOverride {
+            request_id,
+            rendered_prompt,
+        }) = prompt_override
         {
-            *last_user = rig_core::completion::Message::user(rendered);
+            let row = model_history
+                .row_ids
+                .iter()
+                .position(|id| id == &request_id)
+                .ok_or_else(|| {
+                    AppError::Conflict("Command request is missing from model history".into())
+                })?;
+            let original_index = model_history
+                .row_range(row)
+                .rev()
+                .find(|&i| {
+                    matches!(
+                        model_history.history[i],
+                        rig_core::completion::Message::User { .. }
+                    )
+                })
+                .ok_or_else(|| {
+                    AppError::Conflict("Command request has no model-facing user message".into())
+                })?;
+            let index = if rig_history == model_history.history {
+                original_index
+            } else {
+                let original = &model_history.history[original_index];
+                let mut matches = rig_history
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, message)| *message == original);
+                let index = matches.next().map(|(i, _)| i);
+                if matches.next().is_some() {
+                    return Err(AppError::Conflict(
+                        "Command request is ambiguous after history changes".into(),
+                    ));
+                }
+                index.ok_or_else(|| {
+                    AppError::Conflict("Command request was removed from model history".into())
+                })?
+            };
+            rig_history[index] = rig_core::completion::Message::user(rendered_prompt);
         }
 
-        let inference = crate::inference::inference(InferenceRequest {
+        // Validate after channel prompts and command overrides have made their
+        // final changes, before inference can trim the active request.
+        crate::chat::compactor::validate_initial_context(
+            &rig_history,
+            &system_prompt,
+            &model_group,
+            &crate::inference::tool_loop::to_rig_tool_definitions(
+                tool_registry.definitions(),
+                tool_registry.mcp_bridge_mode(),
+            ),
+            input_token_estimate,
+        )?;
+        let mut inference = crate::inference::inference(InferenceRequest {
             registry,
+            input_token_estimate,
             model_group,
             system_prompt,
             history: rig_history,
@@ -711,6 +810,11 @@ impl Harness {
         })
         .await?;
 
+        if let InferenceResponse::Cancelled(text) = &mut inference
+            && text.is_empty()
+        {
+            *text = response.content.clone();
+        }
         Ok(AgentLoopOutcome {
             inference,
             response,

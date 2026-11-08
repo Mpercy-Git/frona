@@ -20,6 +20,7 @@ fn test_tool_call(chat_id: &str, message_id: &str, turn: u32, name: &str) -> Too
         chat_id: chat_id.to_string(),
         message_id: message_id.to_string(),
         turn,
+        provider_item_id: None,
         provider_call_id: format!("call-{}", frona::core::repository::new_id()),
         name: name.to_string(),
         arguments: serde_json::json!({"query": "test"}),
@@ -32,8 +33,8 @@ fn test_tool_call(chat_id: &str, message_id: &str, turn: u32, name: &str) -> Too
         system_prompt: None,
         description: None,
         turn_text: None,
-        turn_reasoning: None,
         signature: None,
+        turn_reasoning: None,
         created_at: Utc::now(),
     }
 }
@@ -218,6 +219,7 @@ async fn begin_creates_incomplete_record() {
         chat_id: "chat-1".to_string(),
         message_id: "msg-1".to_string(),
         turn: 0,
+        provider_item_id: None,
         provider_call_id: "call-1".to_string(),
         name: "web_search".to_string(),
         arguments: serde_json::json!({"query": "rust"}),
@@ -230,8 +232,8 @@ async fn begin_creates_incomplete_record() {
         system_prompt: None,
         description: None,
         turn_text: Some("Searching for info:".into()),
-        turn_reasoning: None,
         signature: None,
+        turn_reasoning: None,
         created_at: Utc::now(),
     };
     let id = te.id.clone();
@@ -285,6 +287,7 @@ async fn begin_without_finish_leaves_incomplete() {
         chat_id: "chat-1".to_string(),
         message_id: "msg-1".to_string(),
         turn: 0,
+        provider_item_id: None,
         provider_call_id: "call-crash".to_string(),
         name: "checkout_order".to_string(),
         arguments: serde_json::json!({"order_id": "12345"}),
@@ -297,8 +300,8 @@ async fn begin_without_finish_leaves_incomplete() {
         system_prompt: None,
         description: None,
         turn_text: None,
-        turn_reasoning: None,
         signature: None,
+        turn_reasoning: None,
         created_at: Utc::now(),
     };
     let id = te.id.clone();

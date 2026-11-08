@@ -232,6 +232,7 @@ mod tests {
             chat_id: "chat-1".into(),
             message_id: message_id.into(),
             turn,
+            provider_item_id: None,
             provider_call_id: format!("provider-{id}"),
             name: name.into(),
             arguments,
@@ -243,8 +244,8 @@ mod tests {
             system_prompt: None,
             description: None,
             turn_text: None,
-            turn_reasoning: None,
             signature: None,
+            turn_reasoning: None,
             created_at: Utc.timestamp_opt(i64::from(turn), 0).unwrap(),
         }
     }

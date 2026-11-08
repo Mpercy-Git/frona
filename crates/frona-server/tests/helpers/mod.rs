@@ -215,6 +215,7 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 pub enum MockResponse {
+    Content(Vec<AssistantContent>),
     Text(String),
     TextWithReasoning(String, String),
     ToolCalls(Vec<(String, String, Value)>),
@@ -246,6 +247,10 @@ pub struct MockModelProvider {
     histories: Mutex<Vec<Vec<RigMessage>>>,
     stream_histories: Mutex<Vec<Vec<RigMessage>>>,
     tool_histories: Mutex<Vec<Vec<RigToolDefinition>>>,
+    system_prompts: Mutex<Vec<String>>,
+    model_names: Mutex<Vec<String>>,
+    request_settings: Mutex<Vec<(Option<u64>, Option<f64>)>>,
+    usage: Mutex<Usage>,
 }
 
 impl MockModelProvider {
@@ -257,7 +262,20 @@ impl MockModelProvider {
             histories: Mutex::new(Vec::new()),
             stream_histories: Mutex::new(Vec::new()),
             tool_histories: Mutex::new(Vec::new()),
+            system_prompts: Mutex::new(Vec::new()),
+            model_names: Mutex::new(Vec::new()),
+            request_settings: Mutex::new(Vec::new()),
+            usage: Mutex::new(Usage {
+                input_tokens: 10,
+                output_tokens: 5,
+                total_tokens: 15,
+                ..Default::default()
+            }),
         }
+    }
+
+    pub fn set_usage(&self, usage: Usage) {
+        *self.usage.lock().unwrap() = usage;
     }
 
     /// The history the provider was handed on its most recent call.
@@ -275,6 +293,17 @@ impl MockModelProvider {
 
     pub fn tool_histories(&self) -> Vec<Vec<RigToolDefinition>> {
         self.tool_histories.lock().unwrap().clone()
+    }
+
+    pub fn system_prompts(&self) -> Vec<String> {
+        self.system_prompts.lock().unwrap().clone()
+    }
+    pub fn model_names(&self) -> Vec<String> {
+        self.model_names.lock().unwrap().clone()
+    }
+
+    pub fn request_settings(&self) -> Vec<(Option<u64>, Option<f64>)> {
+        self.request_settings.lock().unwrap().clone()
     }
 
     /// Append a response to the queue after construction for tests that only
@@ -345,18 +374,22 @@ impl ModelProvider for MockModelProvider {
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
     ) -> Result<frona::inference::provider::InferenceOutput, InferenceError> {
+        self.system_prompts
+            .lock()
+            .unwrap()
+            .push(_system_prompt.to_string());
+        self.model_names
+            .lock()
+            .unwrap()
+            .push(_model.model_id.clone());
+        self.request_settings
+            .lock()
+            .unwrap()
+            .push((_max_tokens, _temperature));
         *self.last_history.lock().unwrap() = chat_history.clone();
         self.histories.lock().unwrap().push(chat_history.clone());
         self.tool_histories.lock().unwrap().push(tools);
-        let usage = Usage {
-            input_tokens: 10,
-            output_tokens: 5,
-            total_tokens: 15,
-            cached_input_tokens: 0,
-            cache_creation_input_tokens: 0,
-            reasoning_tokens: 0,
-            tool_use_prompt_tokens: 0,
-        };
+        let usage = self.usage.lock().unwrap().clone();
         let response = match self.next_response_for_history(&chat_history) {
             MockResponse::Barrier(barrier, response) => {
                 barrier.wait().await;
@@ -365,6 +398,7 @@ impl ModelProvider for MockModelProvider {
             response => response,
         };
         let content = match response {
+            MockResponse::Content(content) => content,
             MockResponse::Text(t) => vec![AssistantContent::text(&t)],
             MockResponse::TextWithReasoning(text, reasoning) => vec![
                 AssistantContent::Reasoning(rig_core::completion::message::Reasoning::new(
@@ -404,16 +438,26 @@ impl ModelProvider for MockModelProvider {
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
     ) -> Result<frona::inference::provider::InferenceOutput, InferenceError> {
-        self.stream_histories.lock().unwrap().push(chat_history);
-        let usage = Usage {
-            input_tokens: 10,
-            output_tokens: 5,
-            total_tokens: 15,
-            cached_input_tokens: 0,
-            cache_creation_input_tokens: 0,
-            reasoning_tokens: 0,
-            tool_use_prompt_tokens: 0,
-        };
+        self.stream_histories
+            .lock()
+            .unwrap()
+            .push(chat_history.clone());
+        self.system_prompts
+            .lock()
+            .unwrap()
+            .push(_system_prompt.to_string());
+        self.model_names
+            .lock()
+            .unwrap()
+            .push(_model.model_id.clone());
+        self.request_settings
+            .lock()
+            .unwrap()
+            .push((_max_tokens, _temperature));
+        *self.last_history.lock().unwrap() = chat_history.clone();
+        self.histories.lock().unwrap().push(chat_history);
+        self.tool_histories.lock().unwrap().push(_tools);
+        let usage = self.usage.lock().unwrap().clone();
         let response = match self.next_response() {
             MockResponse::Barrier(barrier, response) => {
                 barrier.wait().await;
@@ -422,6 +466,18 @@ impl ModelProvider for MockModelProvider {
             response => response,
         };
         let content = match response {
+            MockResponse::Content(content) => {
+                for item in &content {
+                    if let AssistantContent::Text(text) = item {
+                        let _ = token_tx
+                            .send(frona::inference::provider::StreamToken::Text(
+                                text.text.clone(),
+                            ))
+                            .await;
+                    }
+                }
+                content
+            }
             MockResponse::Text(t) => {
                 let _ = token_tx
                     .send(frona::inference::provider::StreamToken::Text(t.clone()))
@@ -475,6 +531,20 @@ impl ModelProvider for MockModelProvider {
         _max_tokens: Option<u64>,
         _temperature: Option<f64>,
     ) -> Result<serde_json::Value, InferenceError> {
+        self.system_prompts
+            .lock()
+            .unwrap()
+            .push(_system_prompt.into());
+        self.model_names
+            .lock()
+            .unwrap()
+            .push(_model.model_id.clone());
+        self.request_settings
+            .lock()
+            .unwrap()
+            .push((_max_tokens, _temperature));
+        *self.last_history.lock().unwrap() = _chat_history.clone();
+        self.histories.lock().unwrap().push(_chat_history);
         let response = match self.next_response() {
             MockResponse::Barrier(barrier, response) => {
                 barrier.wait().await;
@@ -736,6 +806,7 @@ pub fn mock_context() -> InferenceContext {
             updated_at: chrono::Utc::now(),
         },
         frona::chat::models::Chat {
+            agent_context_state: Default::default(),
             id: "test-chat".into(),
             user_id: "test-user".into(),
             space_id: None,
@@ -823,6 +894,22 @@ pub fn test_metrics_ctx() -> frona::inference::usage::UsageService {
         rx.recv().expect("recv db")
     });
     test_usage_service(db)
+}
+
+pub fn test_providers(
+    name: &str,
+    provider: Arc<dyn ModelProvider>,
+) -> Arc<HashMap<String, Arc<dyn ModelProvider>>> {
+    Arc::new([(name.to_string(), provider)].into())
+}
+
+/// Upstream tests call this to build the provider set a `ChatService` resolves
+/// models from; in this fork that set is a `ModelProviderRegistry`.
+pub async fn test_model_service(
+    providers: HashMap<String, Arc<dyn ModelProvider>>,
+    groups: HashMap<String, ModelGroup>,
+) -> ModelProviderRegistry {
+    ModelProviderRegistry::for_testing(providers, groups)
 }
 
 pub fn test_registry_with_provider(
@@ -942,6 +1029,67 @@ pub async fn drain_sse_frames(
     frames
 }
 
+/// Explicit empty source set for tests that do not exercise live catalog collection.
+pub fn empty_agent_context_manager(db: &Surreal<Db>) -> frona::agent::context::AgentContextManager {
+    frona::agent::context::AgentContextManager::new(
+        vec![],
+        frona::db::repo::agent_context_snapshots::SurrealAgentContextSnapshotRepo(db.clone()),
+    )
+}
+
+/// Static memory is outside the subject of these isolated chat tests.
+pub fn empty_memory_service() -> std::sync::Arc<dyn frona::memory::service::MemoryService> {
+    struct EmptyMemory;
+    #[async_trait::async_trait]
+    impl frona::memory::service::MemoryService for EmptyMemory {
+        fn tools(&self) -> Vec<std::sync::Arc<dyn frona::tool::AgentTool>> {
+            vec![]
+        }
+        async fn instructions(
+            &self,
+            _: &frona::auth::User,
+        ) -> Result<String, frona::core::error::AppError> {
+            Ok(String::new())
+        }
+        async fn collect(
+            &self,
+            _: &frona::agent::context::AgentContextScope<'_>,
+        ) -> Result<Vec<frona::agent::context::AgentContextSection>, frona::core::error::AppError>
+        {
+            Ok(vec![])
+        }
+    }
+    std::sync::Arc::new(EmptyMemory)
+}
+
+pub fn chat_service_with_context(
+    state: &frona::core::state::AppState,
+    manager: frona::agent::context::AgentContextManager,
+) -> frona::chat::service::ChatService {
+    let agent_prompt_builder = frona::agent::prompt::AgentPromptBuilder::new(
+        state.prompts.clone(),
+        state.storage_service.clone(),
+        test_memory_service(state, &state.db),
+        state.skill_service.clone(),
+    );
+    frona::chat::service::ChatService::new(
+        SurrealRepo::new(state.db.clone()),
+        SurrealRepo::new(state.db.clone()),
+        SurrealRepo::new(state.db.clone()),
+        state.agent_service.clone(),
+        state.model_provider_service.registry().clone(),
+        state.storage_service.clone(),
+        state.user_service.clone(),
+        state.prompts.clone(),
+        state.broadcast_service.clone(),
+        state.presign_service.clone(),
+        state.notification_service.clone(),
+        state.usage_service.clone(),
+        manager,
+        agent_prompt_builder,
+    )
+}
+
 /// Create a minimal ChatService backed by an in-memory SurrealDB for tool loop tests.
 pub async fn test_chat_service() -> frona::chat::service::ChatService {
     test_chat_service_with_db().await.0
@@ -1007,6 +1155,23 @@ pub async fn test_chat_service_with_db() -> (
         300,
     );
 
+    let skill_service = frona::agent::skill::service::SkillService::new(
+        frona::agent::skill::registry::SkillRegistryClient::new(
+            reqwest::Client::new(),
+            format!("{base}/cache"),
+        ),
+        frona::agent::skill::resolver::SkillResolver::new(&base, storage.clone(), &base),
+        storage.clone(),
+        &base,
+        &config.cache,
+    );
+
+    let agent_prompt_builder = frona::agent::prompt::AgentPromptBuilder::new(
+        frona::agent::prompt::PromptLoader::new(&base),
+        storage.clone(),
+        empty_memory_service(),
+        skill_service,
+    );
     let chat_service = frona::chat::service::ChatService::new(
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db.clone()),
@@ -1020,6 +1185,8 @@ pub async fn test_chat_service_with_db() -> (
         presign_service,
         frona::notification::service::NotificationService::new(SurrealRepo::new(db.clone())),
         usage_service,
+        empty_agent_context_manager(&db),
+        agent_prompt_builder,
     );
     (chat_service, db)
 }
@@ -1104,6 +1271,12 @@ pub fn test_harness(
     let mut groups = HashMap::new();
     groups.insert("test".to_string(), test_model_group());
     let mock_registry = ModelProviderRegistry::for_testing(providers, groups);
+    let agent_prompt_builder = frona::agent::prompt::AgentPromptBuilder::new(
+        state.prompts.clone(),
+        state.storage_service.clone(),
+        empty_memory_service(),
+        state.skill_service.clone(),
+    );
     let chat_service = ChatService::new(
         SurrealRepo::new(db.clone()),
         SurrealRepo::new(db.clone()),
@@ -1117,6 +1290,8 @@ pub fn test_harness(
         state.presign_service.clone(),
         state.notification_service.clone(),
         state.usage_service.clone(),
+        empty_agent_context_manager(&state.db),
+        agent_prompt_builder,
     );
     state.chat_service = chat_service.clone();
     let memory_service = test_memory_service(&state, db);
@@ -1126,7 +1301,6 @@ pub fn test_harness(
         state.storage_service.clone(),
         state.agent_service.clone(),
         memory_service,
-        state.skill_service.clone(),
         state.task_service.clone(),
         state.notification_service.clone(),
         state.vault_service.clone(),
@@ -1142,3 +1316,5 @@ pub fn test_harness(
         state.usage_service.clone(),
     ))
 }
+
+pub mod app_state;

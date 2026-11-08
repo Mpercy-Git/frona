@@ -47,6 +47,17 @@ pub struct ToolCall {
     pub message_id: String,
     pub turn: u32,
     pub provider_call_id: String,
+    /// Separate output-item identity on dual-ID providers (OpenAI Responses).
+    #[serde(default)]
+    #[surreal(default)]
+    pub provider_item_id: Option<String>,
+    /// Opaque provider metadata for replaying this call, separate from turn reasoning
+    /// (Gemini thought signatures replay verbatim; Gemini rejects a rebuilt
+    /// tool-calling turn whose calls lost it).
+    /// Both defaults are required so older JSON and database records still load.
+    #[serde(default)]
+    #[surreal(default)]
+    pub signature: Option<String>,
     pub name: String,
     pub arguments: serde_json::Value,
     pub result: String,
@@ -67,10 +78,6 @@ pub struct ToolCall {
     /// chat-completion requests — without it, resume after a HITL pause errors
     /// with `invalid_request_error`.
     pub turn_reasoning: Option<crate::chat::message::models::Reasoning>,
-    /// Provider thought signature attached to this function call (Gemini
-    /// thinking models). Replayed verbatim on later requests; Gemini rejects
-    /// a rebuilt tool-calling turn whose calls lost it.
-    pub signature: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 

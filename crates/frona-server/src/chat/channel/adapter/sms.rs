@@ -1104,6 +1104,7 @@ mod tests {
             chat_id: "chat-1".into(),
             message_id: "msg-1".into(),
             turn: 0,
+            provider_item_id: None,
             provider_call_id: "pc-1".into(),
             name: "any".into(),
             arguments: serde_json::Value::Null,
@@ -1115,8 +1116,8 @@ mod tests {
             system_prompt: None,
             description: None,
             turn_text: text.map(String::from),
-            turn_reasoning: None,
             signature: None,
+            turn_reasoning: None,
             created_at: chrono::Utc::now(),
         }
     }

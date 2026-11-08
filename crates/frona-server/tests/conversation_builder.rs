@@ -96,6 +96,7 @@ fn tool_call(chat_id: &str, message_id: &str, turn: u32, name: &str) -> ToolCall
         chat_id: chat_id.to_string(),
         message_id: message_id.to_string(),
         turn,
+        provider_item_id: None,
         provider_call_id: format!("call-{}", frona::core::repository::new_id()),
         name: name.to_string(),
         arguments: serde_json::json!({"query": "test"}),
@@ -107,8 +108,8 @@ fn tool_call(chat_id: &str, message_id: &str, turn: u32, name: &str) -> ToolCall
         system_prompt: None,
         description: None,
         turn_text: None,
-        turn_reasoning: None,
         signature: None,
+        turn_reasoning: None,
         created_at: Utc::now(),
     }
 }
@@ -132,7 +133,10 @@ async fn agent_with_tool_calls_single_turn() {
     let te2 = tool_call("chat-1", &agent_msg_id, 0, "browse_page");
     let tool_calls = vec![te1, te2];
 
-    let result = builder.build(&messages, &tool_calls, &ctx, None).await;
+    let result = builder
+        .build(&messages, &tool_calls, &ctx, None)
+        .await
+        .history;
 
     assert_eq!(result.len(), 4);
     assert!(matches!(&result[0], RigMessage::User { .. }));
@@ -185,7 +189,10 @@ async fn agent_with_tool_calls_multi_turn() {
     let te_turn1 = tool_call("chat-1", &agent_msg_id, 1, "browse");
     let tool_calls = vec![te_turn0, te_turn1];
 
-    let result = builder.build(&messages, &tool_calls, &ctx, None).await;
+    let result = builder
+        .build(&messages, &tool_calls, &ctx, None)
+        .await
+        .history;
 
     assert_eq!(result.len(), 6);
 }
@@ -204,7 +211,10 @@ async fn agent_executing_status_no_final_text() {
     let te = tool_call("chat-1", &agent_msg_id, 0, "web_search");
     let tool_calls = vec![te];
 
-    let result = builder.build(&messages, &tool_calls, &ctx, None).await;
+    let result = builder
+        .build(&messages, &tool_calls, &ctx, None)
+        .await
+        .history;
 
     assert_eq!(result.len(), 3);
     assert!(matches!(&result[0], RigMessage::User { .. }));
@@ -224,7 +234,10 @@ async fn agent_without_tool_calls_unchanged() {
     ];
     let tool_calls = vec![];
 
-    let result = builder.build(&messages, &tool_calls, &ctx, None).await;
+    let result = builder
+        .build(&messages, &tool_calls, &ctx, None)
+        .await
+        .history;
 
     assert_eq!(result.len(), 2);
     assert!(matches!(&result[0], RigMessage::User { .. }));
@@ -252,7 +265,10 @@ async fn turn_text_appears_in_reconstructed_history() {
     te.turn_text = Some("Here's what I found:".into());
     let tool_calls = vec![te];
 
-    let result = builder.build(&messages, &tool_calls, &ctx, None).await;
+    let result = builder
+        .build(&messages, &tool_calls, &ctx, None)
+        .await
+        .history;
 
     assert_eq!(result.len(), 4);
 
@@ -281,7 +297,10 @@ async fn turn_text_empty_string_omitted() {
     te.turn_text = Some(String::new());
     let tool_calls = vec![te];
 
-    let result = builder.build(&messages, &tool_calls, &ctx, None).await;
+    let result = builder
+        .build(&messages, &tool_calls, &ctx, None)
+        .await
+        .history;
 
     if let RigMessage::Assistant { content, .. } = &result[1] {
         let items: Vec<_> = content.iter().collect();
@@ -316,7 +335,7 @@ async fn agent_with_tool_calls_includes_per_turn_reasoning() {
         raw: None,
     });
 
-    let result = builder.build(&messages, &[te], &ctx, None).await;
+    let result = builder.build(&messages, &[te], &ctx, None).await.history;
 
     assert_eq!(result.len(), 3);
 
@@ -351,7 +370,10 @@ async fn agent_with_tool_calls_omits_reasoning_when_absent() {
     te.turn_text = Some("looking".into());
     let tool_calls = vec![te];
 
-    let result = builder.build(&messages, &tool_calls, &ctx, None).await;
+    let result = builder
+        .build(&messages, &tool_calls, &ctx, None)
+        .await
+        .history;
 
     if let RigMessage::Assistant { content, .. } = &result[1] {
         let items: Vec<_> = content.iter().collect();
@@ -392,7 +414,10 @@ async fn agent_with_tool_calls_attaches_reasoning_per_turn() {
         raw: None,
     });
 
-    let result = builder.build(&messages, &[te0, te1], &ctx, None).await;
+    let result = builder
+        .build(&messages, &[te0, te1], &ctx, None)
+        .await
+        .history;
 
     assert_eq!(result.len(), 5);
 
@@ -415,10 +440,11 @@ async fn prepends_conversation_summary() {
     let ctx = test_ctx();
     let messages = vec![user_message("chat-1", "hello")];
 
-    let without = builder.build(&messages, &[], &ctx, None).await;
+    let without = builder.build(&messages, &[], &ctx, None).await.history;
     let with = builder
         .build(&messages, &[], &ctx, Some("earlier conversation"))
-        .await;
+        .await
+        .history;
 
     assert_eq!(
         with.len(),
@@ -431,5 +457,45 @@ async fn prepends_conversation_summary() {
     assert!(
         format!("{:?}", with[0]).contains("conversation_summary"),
         "leading message must be the summary block"
+    );
+}
+
+mod helpers;
+
+#[tokio::test]
+async fn frozen_context_and_tool_instructions_keep_their_original_positions() {
+    let db = test_db().await;
+    let builder = test_builder(&db);
+    let mut user = user_message("chat", "original command");
+    user.processed_content = Some("<user_profile>new memory</user_profile>\n<temporal_context>fixed time</temporal_context>\nfrozen skill expansion".into());
+    let assistant = agent_message("chat", "done", Some(MessageStatus::Completed));
+    let mut first = tool_call("chat", &assistant.id, 0, "first");
+    first.system_prompt = Some("first tool instructions".into());
+    first.signature = Some("opaque signature".into());
+    let mut second = tool_call("chat", &assistant.id, 0, "second");
+    second.system_prompt = Some("second tool instructions".into());
+    let history = builder
+        .build(
+            &[user.clone(), assistant.clone()],
+            &[first, second],
+            &test_ctx(),
+            None,
+        )
+        .await;
+    assert_eq!(history.row_ends, vec![1, 6]);
+    assert_eq!(
+        history.history[0],
+        RigMessage::user(user.inference_content())
+    );
+    assert!(
+        matches!(&history.history[2], RigMessage::User { content } if content.len() == 2 && content.iter().all(|c| matches!(c, UserContent::ToolResult(_))))
+    );
+    assert_eq!(
+        history.history[3],
+        RigMessage::user("first tool instructions")
+    );
+    assert_eq!(
+        history.history[4],
+        RigMessage::user("second tool instructions")
     );
 }
