@@ -1,6 +1,6 @@
 services:
   frona:
-    image: ghcr.io/mpercy-git/frona:v2026.10.6
+    image: ghcr.io/mpercy-git/frona:v2026.11.0
     ports:
       - "3001:3001"
     volumes:
