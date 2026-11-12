@@ -238,7 +238,8 @@ async fn reset_rebuilds_only_the_authenticated_users_memory_on_a_later_sweep() {
         setup_metrics_recorder(),
         resource_manager,
         catalog_sources,
-    );
+    )
+    .await;
     state.policy_service.sync_base_policies().await.unwrap();
 
     let (_, other_user_id, other_handle) = register(&state, "other-user").await;
@@ -270,7 +271,7 @@ async fn reset_rebuilds_only_the_authenticated_users_memory_on_a_later_sweep() {
         },
     );
     state.pkm_service = Some(pkm.clone());
-    let harness = test_harness(&db, &config, mock.clone());
+    let harness = test_harness(&db, &config, mock.clone()).await;
     let seeded_repo = PkmRepo::new(db.clone(), 8);
     seeded_repo
         .upsert_entity_skeleton(

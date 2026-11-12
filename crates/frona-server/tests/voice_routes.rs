@@ -56,7 +56,8 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
         metrics,
         resource_manager,
         catalog_sources,
-    );
+    )
+    .await;
     (state, tmp)
 }
 

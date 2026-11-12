@@ -374,15 +374,9 @@ impl ChatCompactor {
             .map(estimate_message_tokens)
             .sum::<usize>();
         let available = context_window.saturating_sub(max_output_tokens);
-        let system_tokens = estimate_tokens(system_prompt)
-            + tools
-                .iter()
-                .map(|tool| {
-                    estimate_tokens(
-                        &serde_json::to_string(tool).expect("tool definition is serializable"),
-                    )
-                })
-                .sum::<usize>();
+        let prompt_tokens = estimate_tokens(system_prompt);
+        let tool_tokens = estimate_tool_tokens(tools);
+        let system_tokens = prompt_tokens + tool_tokens;
         let mut summary_tokens = model_history.history[..model_history.summary_end]
             .iter()
             .map(estimate_message_tokens)
@@ -455,7 +449,16 @@ impl ChatCompactor {
             .unwrap_or(live.len() - 1);
         let protected = timestamp_group_start(&live, protected);
         let protected_tokens = costs[protected..].iter().sum::<usize>();
-        ensure_fits(system_tokens + protected_tokens, available)?;
+        ensure_fits(
+            system_tokens + protected_tokens,
+            available,
+            &ContextBreakdown {
+                prompt_tokens,
+                tool_tokens,
+                summary_tokens,
+                conversation_tokens: protected_tokens,
+            },
+        )?;
 
         let target = available * COMPACT_TARGET_PCT / 100;
         let mut keep_from_idx = protected;
@@ -472,7 +475,16 @@ impl ChatCompactor {
         // silently discard a retained row with the same timestamp as the prefix.
         keep_from_idx = timestamp_group_start(&live, keep_from_idx);
         if keep_from_idx == 0 {
-            ensure_fits(total_tokens, available)?;
+            ensure_fits(
+                total_tokens,
+                available,
+                &ContextBreakdown {
+                    prompt_tokens,
+                    tool_tokens,
+                    summary_tokens,
+                    conversation_tokens: costs.iter().sum(),
+                },
+            )?;
             return Ok(unchanged(input_token_estimate));
         }
         if has_later_rows {
@@ -539,11 +551,17 @@ impl ChatCompactor {
         // Do not publish a summary that still cannot fit alongside the retained
         // request. The original rows and prior summary remain recoverable on error.
         if !has_agent_context {
+            let new_summary_tokens = summary_tokens_for(&content);
+            let retained_tokens = costs[keep_from_idx..].iter().sum::<usize>();
             ensure_fits(
-                system_tokens
-                    + summary_tokens_for(&content)
-                    + costs[keep_from_idx..].iter().sum::<usize>(),
+                system_tokens + new_summary_tokens + retained_tokens,
                 available,
+                &ContextBreakdown {
+                    prompt_tokens,
+                    tool_tokens,
+                    summary_tokens: new_summary_tokens,
+                    conversation_tokens: retained_tokens,
+                },
             )?;
         }
         let mut compacted_history = model_history.clone();
@@ -626,7 +644,18 @@ pub(crate) fn validate_initial_context(
             .request_settings
             .max_tokens
             .unwrap_or(model_group.inference.default_max_tokens) as usize;
-        return ensure_fits(tokens, model_group.context_window.saturating_sub(output));
+        return ensure_fits(
+            tokens,
+            model_group.context_window.saturating_sub(output),
+            &ContextBreakdown {
+                prompt_tokens: estimate_tokens(system_prompt),
+                tool_tokens: estimate_tool_tokens(tools),
+                // The calibrated total cannot be split further; this is the
+                // uncalibrated size of everything after the system prompt.
+                summary_tokens: 0,
+                conversation_tokens: history.iter().map(estimate_message_tokens).sum(),
+            },
+        );
     }
     let tokens = history.iter().map(estimate_message_tokens).sum::<usize>();
     let model = &model_group.main;
@@ -652,10 +681,39 @@ fn summary_tokens_for(content: &str) -> usize {
     estimate_message_tokens(&summary_message(content))
 }
 
-fn ensure_fits(tokens: usize, available: usize) -> Result<(), AppError> {
+/// Where the tokens of a request that does not fit are going. Reported with the
+/// error so an oversized system prompt, tool list or rolling summary (none of
+/// which compaction can shrink) is distinguishable from a long conversation.
+struct ContextBreakdown {
+    prompt_tokens: usize,
+    tool_tokens: usize,
+    summary_tokens: usize,
+    conversation_tokens: usize,
+}
+
+fn estimate_tool_tokens(tools: &[RigToolDefinition]) -> usize {
+    tools
+        .iter()
+        .map(|tool| {
+            estimate_tokens(&serde_json::to_string(tool).expect("tool definition is serializable"))
+        })
+        .sum()
+}
+
+fn ensure_fits(
+    tokens: usize,
+    available: usize,
+    breakdown: &ContextBreakdown,
+) -> Result<(), AppError> {
     if tokens > available {
+        let ContextBreakdown {
+            prompt_tokens,
+            tool_tokens,
+            summary_tokens,
+            conversation_tokens,
+        } = breakdown;
         return Err(AppError::Validation(format!(
-            "Chat context exceeds the available context limit ({tokens} estimated tokens, {available} available); the current request has been preserved"
+            "Chat context exceeds the available context limit ({tokens} estimated tokens, {available} available); the current request has been preserved. Uncompactable parts: system prompt ~{prompt_tokens}, tool definitions ~{tool_tokens}, conversation summary ~{summary_tokens}; retained messages ~{conversation_tokens}"
         )));
     }
     Ok(())

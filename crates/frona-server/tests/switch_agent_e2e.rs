@@ -98,7 +98,8 @@ async fn build_state(
         metrics_handle,
         resource_manager,
         catalog_sources,
-    );
+    )
+    .await;
 
     let mut providers = HashMap::new();
     providers.insert("mock".to_string(), provider);

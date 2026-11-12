@@ -2429,6 +2429,7 @@ mod tests {
             resource_manager,
             catalog_sources,
         )
+        .await
     }
 
     #[tokio::test]

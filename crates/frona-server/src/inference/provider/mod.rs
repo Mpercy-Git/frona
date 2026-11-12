@@ -4,6 +4,7 @@ pub mod platform;
 pub mod registry;
 pub mod service;
 pub mod validation;
+pub mod windows;
 
 use std::future::Future;
 use std::pin::Pin;

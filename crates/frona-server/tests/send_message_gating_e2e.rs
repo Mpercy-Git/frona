@@ -100,7 +100,8 @@ async fn build_state() -> (AppState, tempfile::TempDir) {
         metrics_handle,
         resource_manager,
         catalog_sources,
-    );
+    )
+    .await;
 
     // Replace the default chat_service with one wired to a mock provider so
     // model-group resolution succeeds. We don't run inference here - the tests

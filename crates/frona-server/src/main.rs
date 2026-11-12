@@ -135,7 +135,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         metrics_handle,
         resource_manager,
         catalog_sources,
-    );
+    )
+    .await;
     state.agent_service.sync_agent_limits().await?;
     state.vault_service.sync_config_connections().await?;
     state.browser_session_manager.kill_all_sessions().await;

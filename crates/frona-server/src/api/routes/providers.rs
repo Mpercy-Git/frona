@@ -352,13 +352,18 @@ mod tests {
                 ),
             ),
             crate::app_state_fixture::catalogs(&config),
-        );
+        )
+        .await;
         state.vault_service.sync_config_connections().await.unwrap();
         // require_operator (GET/PUT /api/config) authorizes through
         // PolicyService, which only grants the admins group its built-in
         // list_users permission once base policies are seeded - production
         // boot always does this (main.rs), so the test must too.
         state.policy_service.sync_base_policies().await.unwrap();
+        // Startup lists the provider's models to learn context windows, which
+        // is legitimate traffic. The matrix below asserts that *blocked
+        // requests* cause none, so measure against what boot itself sent.
+        let boot_requests = server.received_requests().await.unwrap().len();
         state.model_provider_service.validator = state
             .model_provider_service
             .validator
@@ -633,7 +638,10 @@ mod tests {
                             .unwrap()
                             .is_empty()
                     );
-                    assert!(server.received_requests().await.unwrap().is_empty());
+                    assert_eq!(
+                        server.received_requests().await.unwrap().len(),
+                        boot_requests
+                    );
                 }
                 for secret in [
                     "legacy-secret",

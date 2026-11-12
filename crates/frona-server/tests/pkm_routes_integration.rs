@@ -67,7 +67,8 @@ async fn test_state(backend: MemoryBackend) -> (AppState, tempfile::TempDir) {
         metrics,
         resource_manager,
         catalog_sources,
-    );
+    )
+    .await;
     (state, tmp)
 }
 

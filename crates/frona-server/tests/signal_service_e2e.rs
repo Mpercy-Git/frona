@@ -87,7 +87,8 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         metrics_handle,
         resource_manager,
         catalog_sources,
-    );
+    )
+    .await;
 
     // Replace the default chat_service with one wired to the mock model
     // provider so run_agent_loop doesn't try to reach a real LLM.
@@ -409,7 +410,8 @@ async fn build_state_with_dyn(
         metrics_handle,
         resource_manager,
         catalog_sources,
-    );
+    )
+    .await;
 
     let mut providers: HashMap<String, Arc<dyn frona::inference::provider::ModelProvider>> =
         HashMap::new();

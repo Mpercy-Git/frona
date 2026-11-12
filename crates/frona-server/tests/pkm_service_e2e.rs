@@ -365,7 +365,7 @@ async fn service_pipeline_consolidates_searches_reads_and_cites_entities_and_pla
         test_user_service(&db),
         ontology_base(),
     );
-    let harness = test_harness(&db, &config, mock.clone());
+    let harness = test_harness(&db, &config, mock.clone()).await;
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
     let ctx = mock_context(); // user id "test-user", handle "testuser", chat "test-chat"
 
@@ -882,7 +882,7 @@ async fn consolidation_routes_self_memories_persists_aliases_and_updates_user_pr
         test_user_service(&db),
         ontology_base(),
     );
-    let harness = test_harness(&db, &config, mock.clone());
+    let harness = test_harness(&db, &config, mock.clone()).await;
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
 
     let scope = |chat: &str| ConsolidationScope {
@@ -1133,7 +1133,7 @@ async fn self_entity_write_through_updates_user_timezone() {
         test_user_service(&db),
         ontology_base(),
     );
-    let harness = test_harness(&db, &config, mock.clone());
+    let harness = test_harness(&db, &config, mock.clone()).await;
 
     let scope = ConsolidationScope {
         user_id: "test-user".into(),
@@ -1542,7 +1542,7 @@ async fn recovery_relocates_deduplicates_and_rerenders() {
         test_user_service(&db),
         ontology_base(),
     );
-    let harness = test_harness(&db, &config, mock.clone());
+    let harness = test_harness(&db, &config, mock.clone()).await;
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
 
     let scope = ConsolidationScope {
@@ -1854,7 +1854,7 @@ async fn classify_types_entities_and_assemble_mints_schema() {
         ontology_base(),
     );
     let ontology_manager = ontology_manager(&db);
-    let harness = test_harness(&db, &config, mock.clone());
+    let harness = test_harness(&db, &config, mock.clone()).await;
 
     let result = full_pass(
         &service,
@@ -2007,7 +2007,7 @@ async fn classify_discards_a_clashing_submission_without_hiding_facts() {
         .await
         .unwrap();
 
-    let harness = test_harness(&db, &config, mock.clone());
+    let harness = test_harness(&db, &config, mock.clone()).await;
     let result = full_pass(&service, ontology_scope(&service), "", harness).await;
     assert!(result.is_ok(), "{result:?}\n{:#?}", mock.histories());
     let stats = result.unwrap();
@@ -2075,7 +2075,7 @@ async fn consolidate_only_service(
         test_user_service(db),
         ontology_base(),
     );
-    let harness = test_harness(db, &config, mock);
+    let harness = test_harness(db, &config, mock).await;
     (service, harness, config, tmp)
 }
 
@@ -2315,7 +2315,7 @@ async fn ontology_service(
         test_user_service(db),
         ontology_base(),
     );
-    let harness = test_harness(db, config, mock);
+    let harness = test_harness(db, config, mock).await;
     (service, harness)
 }
 
@@ -4164,7 +4164,7 @@ async fn classify_loop_revises_after_reasoner_rejection() {
         .await
         .unwrap();
 
-    let harness = test_harness(&db, &config, mock.clone());
+    let harness = test_harness(&db, &config, mock.clone()).await;
     full_pass(
         &service,
         ontology_scope(&service),
@@ -4413,7 +4413,7 @@ async fn term_that_cannot_be_written_is_pushed_back_before_it_reaches_the_schema
     );
     let ontology_manager = ontology_manager(&db);
 
-    let harness = test_harness(&db, &config, mock.clone());
+    let harness = test_harness(&db, &config, mock.clone()).await;
     full_pass(
         &service,
         ontology_scope(&service),
@@ -4547,7 +4547,7 @@ async fn adjudicated_term_matches_its_proposal_across_spellings() {
     );
     let ontology_manager = ontology_manager(&db);
 
-    let harness = test_harness(&db, &config, mock.clone());
+    let harness = test_harness(&db, &config, mock.clone()).await;
     let result = full_pass(
         &service,
         ontology_scope(&service),
@@ -4673,7 +4673,7 @@ async fn resolve_exhausted_ungrounded_merge_remains_unresolved() {
         test_user_service(&db),
         ontology_base(),
     );
-    let harness = test_harness(&db, &config, mock.clone());
+    let harness = test_harness(&db, &config, mock.clone()).await;
 
     let stats = full_pass(
         &service,
@@ -4811,7 +4811,7 @@ async fn memoryless_entity_is_only_a_resolve_candidate_and_link_target() {
         test_user_service(&db),
         ontology_base(),
     );
-    let harness = test_harness(&db, &config, mock.clone());
+    let harness = test_harness(&db, &config, mock.clone()).await;
 
     let result = full_pass(
         &service,
@@ -4947,7 +4947,7 @@ async fn attribute_naming_an_entity_becomes_an_edge_without_inventing_an_inverse
         test_user_service(&db),
         ontology_base(),
     );
-    let harness = test_harness(&db, &config, mock.clone());
+    let harness = test_harness(&db, &config, mock.clone()).await;
 
     full_pass(
         &service,
@@ -5045,7 +5045,7 @@ async fn attribute_naming_an_entity_becomes_an_edge_without_inventing_an_inverse
     service
         .consolidate(
             ontology_scope(&service),
-            test_harness(&db, &config, mock.clone()),
+            test_harness(&db, &config, mock.clone()).await,
         )
         .await
         .unwrap();
@@ -5230,7 +5230,7 @@ async fn attribute_naming_an_unmaterialized_entity_mints_it_and_shares_the_fact(
     service
         .consolidate(
             ontology_scope(&service),
-            test_harness(&db, &config, mock.clone()),
+            test_harness(&db, &config, mock.clone()).await,
         )
         .await
         .unwrap();
@@ -5435,7 +5435,7 @@ async fn re_minting_the_same_entity_creates_no_duplicate() {
         let result = service
             .consolidate(
                 ontology_scope(&service),
-                test_harness(&db, &config, mock.clone()),
+                test_harness(&db, &config, mock.clone()).await,
             )
             .await;
         assert!(
@@ -6473,7 +6473,7 @@ async fn assemble_align_stamps_the_standard_term_and_retypes_prior_entities() {
         test_user_service(&db),
         ontology_base(),
     );
-    let harness = test_harness(&db, &config, mock.clone());
+    let harness = test_harness(&db, &config, mock.clone()).await;
     full_pass(
         &service,
         ontology_scope(&service),
@@ -6616,7 +6616,7 @@ async fn assemble_restrict_commits_when_existing_values_satisfy_the_facet() {
         test_user_service(&db),
         ontology_base(),
     );
-    let harness = test_harness(&db, &config, mock.clone());
+    let harness = test_harness(&db, &config, mock.clone()).await;
     let stats = full_pass(
         &service,
         ontology_scope(&service),
@@ -6728,7 +6728,7 @@ async fn reconcile_minted_data_property_is_declared_before_assemble_commit() {
         &service,
         ontology_scope(&service),
         "Db uses strict mode.",
-        test_harness(&db, &config, mock.clone()),
+        test_harness(&db, &config, mock.clone()).await,
     )
     .await
     .unwrap();
@@ -6830,7 +6830,7 @@ async fn assemble_restrict_that_invalidates_existing_entities_is_rejected() {
         test_user_service(&db),
         ontology_base(),
     );
-    let harness = test_harness(&db, &config, mock.clone());
+    let harness = test_harness(&db, &config, mock.clone()).await;
     full_pass(
         &service,
         ontology_scope(&service),
@@ -6910,7 +6910,7 @@ async fn assemble_defer_keeps_the_validated_baseline_declaration() {
         test_user_service(&db),
         ontology_base(),
     );
-    let harness = test_harness(&db, &config, mock.clone());
+    let harness = test_harness(&db, &config, mock.clone()).await;
     full_pass(
         &service,
         ontology_scope(&service),
@@ -7037,7 +7037,7 @@ async fn episodic_reminder_is_grounded_without_current_attributes() {
     };
 
     let batch = service
-        .mine_window(scope, transcript, test_harness(&db, &config, mock))
+        .mine_window(scope, transcript, test_harness(&db, &config, mock).await)
         .await
         .unwrap();
 
@@ -7296,7 +7296,11 @@ async fn task_lifecycle_episodes_require_the_applicable_task_dates() {
     };
 
     let batch = service
-        .mine_window(scope, transcript, test_harness(&db, &config, mock.clone()))
+        .mine_window(
+            scope,
+            transcript,
+            test_harness(&db, &config, mock.clone()).await,
+        )
         .await
         .unwrap();
 

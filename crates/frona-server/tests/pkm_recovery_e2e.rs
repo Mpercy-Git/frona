@@ -161,7 +161,8 @@ async fn setup(
         metrics_handle,
         resource_manager,
         catalog_sources,
-    );
+    )
+    .await;
 
     state
         .user_service
@@ -209,7 +210,7 @@ async fn setup(
         state.user_service.clone(),
         ontology_base,
     );
-    let harness = test_harness(&db, &config, mock.clone());
+    let harness = test_harness(&db, &config, mock.clone()).await;
     seed_agent(&db).await;
     Ctx {
         _tmp: tmp,
