@@ -135,7 +135,8 @@ async fn test_app_state_with_mock(mock: Arc<MockModelProvider>) -> (AppState, te
         metrics_handle,
         resource_manager.clone(),
         catalog_sources,
-    );
+    )
+    .await;
     // Must reuse `state.broadcast_service` - a fresh BroadcastService here
     // would disconnect events fired inside ChatService from SSE sessions
     // registered against state.broadcast_service.

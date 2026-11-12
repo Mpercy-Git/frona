@@ -147,7 +147,8 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
         metrics,
         resource_manager,
         catalog_sources,
-    );
+    )
+    .await;
 
     // Override the MCP service with a noop package installer so tests don't
     // try to run npx/uvx against fake packages.

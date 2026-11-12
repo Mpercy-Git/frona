@@ -219,7 +219,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(
+    pub async fn new(
         db: Surreal<Db>,
         config_service: ConfigService,
         models_config: Option<ModelRegistryConfig>,
@@ -284,13 +284,29 @@ impl AppState {
                 crate::inference::provider::InferenceCounter::new(broadcast_service.clone()),
             ),
         );
-        let provider_groups = llm_config
+        let mut provider_groups = llm_config
             .parse_model_groups_with_catalog(
                 &config.inference,
                 &catalog_sources.models.current(),
                 Arc::new(provider_runtime.providers()),
             )
             .expect("Failed to build model provider groups");
+        // The catalog lags new releases, and an unknown model falls back to a
+        // 128K window. Prefer the context length the provider's own listing
+        // reports; a configured `context_window` still wins, and providers that
+        // cannot list (or are unreachable) keep the catalog value.
+        crate::inference::provider::windows::apply_listed_context_windows(
+            &mut provider_groups,
+            &llm_config
+                .models
+                .iter()
+                .filter(|(_, group)| group.common.context_window.is_some())
+                .map(|(name, _)| name.clone())
+                .collect(),
+            &provider_runtime.providers(),
+            crate::inference::provider::windows::LISTING_TIMEOUT,
+        )
+        .await;
         let model_provider_service = crate::inference::provider::service::ModelProviderService::new(
             crate::inference::directory::models::ModelDirectoryService::new(
                 catalog_sources.clone(),

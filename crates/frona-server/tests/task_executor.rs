@@ -79,7 +79,8 @@ async fn test_app_state() -> (AppState, tempfile::TempDir) {
         metrics_handle,
         resource_manager,
         catalog_sources,
-    );
+    )
+    .await;
     // Seed the agent + user the test fixtures reference via `agent_id: "agent-1"`
     // / `user_id: "user-1"`, so chat creation (which now validates agent
     // existence + ownership) succeeds.
@@ -1096,7 +1097,8 @@ async fn test_app_state_no_spawning() -> (AppState, tempfile::TempDir) {
         metrics_handle,
         resource_manager,
         catalog_sources,
-    );
+    )
+    .await;
     seed_user_and_agent(&state).await;
     (state, tmp)
 }

@@ -352,7 +352,8 @@ mod tests {
                 ),
             ),
             crate::app_state_fixture::catalogs(&config),
-        );
+        )
+        .await;
         state.vault_service.sync_config_connections().await.unwrap();
         // require_operator (GET/PUT /api/config) authorizes through
         // PolicyService, which only grants the admins group its built-in

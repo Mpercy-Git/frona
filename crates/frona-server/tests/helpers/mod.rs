@@ -1229,7 +1229,7 @@ pub async fn test_event_sender() -> (
 /// Build a `Harness` whose inference is wired to `mock_provider` (via a mock-registry
 /// `ChatService`), for exercising the harness-routed PKM consolidation path. All other
 /// services are real in-memory ones from a throwaway `AppState`.
-pub fn test_harness(
+pub async fn test_harness(
     db: &Surreal<Db>,
     config: &frona::core::config::Config,
     mock_provider: Arc<dyn ModelProvider>,
@@ -1263,7 +1263,8 @@ pub fn test_harness(
         metrics_handle,
         resource_manager,
         catalog_sources,
-    );
+    )
+    .await;
 
     // ChatService wired to the mock provider so all harness inference hits it.
     let mut providers: HashMap<String, Arc<dyn ModelProvider>> = HashMap::new();

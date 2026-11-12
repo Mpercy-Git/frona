@@ -85,7 +85,7 @@ async fn setup(
         test_model_group(),
     ));
     let prompts = frona::agent::prompt::PromptLoader::new(resources_prompts());
-    let harness = test_harness(&db, &config, mock);
+    let harness = test_harness(&db, &config, mock).await;
     let repo = PkmRepo::new(db.clone(), memory_config.pkm_search_top_k);
     // The sync engine the API builds from `AppState` - same repo + storage + deps.
     let sync = PkmSyncService::new(

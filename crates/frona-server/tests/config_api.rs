@@ -144,7 +144,8 @@ async fn test_runtime_config_operations() {
         metrics_handle,
         resource_manager,
         catalog_sources,
-    );
+    )
+    .await;
 
     let val = state.get_runtime_config("setup_completed").await.unwrap();
     assert!(val.is_none());

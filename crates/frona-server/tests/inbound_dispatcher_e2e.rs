@@ -82,7 +82,8 @@ async fn build_state(provider: Arc<MockModelProvider>) -> (AppState, tempfile::T
         metrics_handle,
         resource_manager,
         catalog_sources,
-    );
+    )
+    .await;
 
     let mut providers: HashMap<String, Arc<dyn frona::inference::provider::ModelProvider>> =
         HashMap::new();
