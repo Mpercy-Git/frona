@@ -629,3 +629,27 @@ decision.
 **Divergence control:** the harness/PKM extraction makes future upstream
 commits land in new crates the fork lacks, so each month of delay raises
 porting cost. Decide M soon.
+
+### Status update — 2026-11-13 (Group K landed, Group L partial)
+
+**Group K:** `47eafcf6` (SurrealDB 3.3.5, concurrent-write fixes, rewritten
+ontology CAS test) and `74369f6f` (Presage `4b817406`, wa-rs on `homun-app`,
+`libcrux-ml-kem` opt-level 3 in the root `Cargo.toml` profile) landed.
+Lock updated with `cargo update -p`. Verified: `cargo check --workspace
+--tests`; `db::repo` lib tests (50 pass). Skipped: `b3cd197a` (bumps toolchain
+to Rust 1.99.1/Node 24.22; fork stays on 1.98.1 until CI can validate);
+`47afabd2` (general Cargo refresh) still open. Upstream's `.cargo/config.toml`
+(`47eafcf6`, `74369f6f`) belongs to Group O's dev-container work.
+
+**Group L:** the `frona-text` crate itself is ported wholesale from upstream
+(`prompt` module behind the `prompts` feature, `redaction` behind
+`redaction`, README/LICENSE, publish metadata): `b6dff1e5` (crate part),
+`559d2a2f`, `63904012`, `a0704eb3`, `0ce3ae28`. 144 tests pass with
+`--all-features`. **Not ported:** `b6dff1e5`'s server-side switch from
+`agent::prompt::PromptLoader`/`core::template` to `frona_text::prompt`. The
+fork's `PromptLoader` has a process-lifetime read cache (and a
+`denied_delegation_note` helper alongside it) that upstream's loader lacks, so
+adopting upstream's loader as-is would regress that. Next step: add the same
+cache to `frona_text::prompt::PromptLoader` (opt-in), then migrate the ~70
+server import sites mechanically. The new feature flags are not enabled by the
+server, so nothing changed at runtime.

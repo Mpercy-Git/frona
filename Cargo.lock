@@ -3429,10 +3429,13 @@ dependencies = [
 
 [[package]]
 name = "frona-text"
-version = "2026.8.5"
+version = "0.1.0"
 dependencies = [
  "ignore",
+ "minijinja",
+ "rtb-redact",
  "serde",
+ "serde_json",
  "tempfile",
  "unicode-casefold",
  "unicode-normalization-alignments",

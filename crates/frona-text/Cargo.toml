@@ -1,7 +1,14 @@
 [package]
+description = "Unicode-aware text matching, prompt templates, and configurable redaction"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/fronalabs/frona"
+documentation = "https://docs.rs/frona-text"
+keywords = ["unicode", "text", "prompts", "redaction"]
+categories = ["text-processing"]
 name = "frona-text"
 edition.workspace = true
-version.workspace = true
+version = "0.1.0"
 
 [dependencies]
 unicode-normalization-alignments = "0.1"
@@ -9,10 +16,18 @@ unicode-casefold = "0.2"
 unicode_categories = "0.1"
 ignore = "0.4"
 serde = { workspace = true, optional = true }
+minijinja = { version = "3", optional = true }
+rtb-redact = { version = "0.6", optional = true }
+serde_json = { workspace = true, optional = true }
 
 [features]
 default = []
+prompts = ["dep:minijinja"]
+redaction = ["dep:rtb-redact", "dep:serde_json"]
 serde = ["dep:serde"]
 
 [dev-dependencies]
 tempfile = "3"
+
+[package.metadata.docs.rs]
+all-features = true
